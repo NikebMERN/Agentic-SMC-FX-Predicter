@@ -1,0 +1,77 @@
+/* Home.css */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: 'Arial', sans-serif;
+}
+
+.home-container {
+  min-height: 100vh;
+  background-image: url('../assets/kanchanara-5hcV51EeeWc-unsplash.jpg'); /* Replace with your image */
+  background-repeat: no-repeat;
+  background-size: cover; /* Ensures image covers the width and keeps good quality */
+  background-attachment: fixed; /* Keeps it static while scrolling */
+  background-position: top center; /* Centers image at top */
+  background-color: #111; /* fallback background */
+  
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2rem 1rem;
+}
+
+.home-title {
+  font-size: 2.5rem;
+  font-weight: bold;
+  color: white;
+  background-color: rgba(0, 0, 0, 0.4);
+  padding: 1rem 2rem;
+  border-radius: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.search-bar {
+  width: 100%;
+  max-width: 500px;
+  padding: 0.75rem 1rem;
+  font-size: 1rem;
+  border-radius: 9999px;
+  border: none;
+  margin-bottom: 2rem;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+}
+
+.loading-text {
+  color: white;
+  font-size: 1.25rem;
+}
+
+.currency-grid {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.currency-group {
+  width: 100%;
+  max-width: 1200px;
+  margin-bottom: 2rem;
+}
+
+.group-heading {
+  color: white;
+  font-size: 2rem;
+  font-weight: 600;
+  margin-bottom: 0rem;
+  padding-left: 1rem;
+  /* border-bottom: 2px solid white; */
+  display: inline-block;
+}
+
+.group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 1rem;
+}

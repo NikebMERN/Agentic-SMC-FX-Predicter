@@ -1,0 +1,10 @@
+🔍 Detection Options
+1. Trend Detection (uptrend, downtrend, sideways)
+
+2. Price Action Patterns (like bullish engulfing, doji, etc.)
+
+3. Support and Resistance Levels
+
+4. Simple Moving Average (SMA) Crossovers
+
+5. Buy/Sell Signal using a Model (e.g., ML or rule-based)

@@ -1,0 +1,101 @@
+Folder PATH listing for volume Windows
+Volume serial number is F678-B615
+C:.
+|   .env
+|   batch_fetch.py
+|   bot.py
+|   main.py
+|   README.md
+|   requirements.txt
+|   Secured.txt
+|   structure.txt
+|   trail_main-clone.py
+|   
++---data
+|   |   AUDCAD_5min.csv
+|   |   AUDCHF_5min.csv
+|   |   AUDHKD_5min.csv
+|   |   AUDHUF_5min.csv
+|   |   AUDILS_5min.csv
+|   |   AUDJPY_5min.csv
+|   |   AUDNOK_5min.csv
+|   |   AUDNZD_5min.csv
+|   |   AUDPLN_5min.csv
+|   |   AUDSEK_5min.csv
+|   |   AUDSGD_5min.csv
+|   |   AUDUSD_5min.csv
+|   |   ......
+|   |
+|   +---1H_DATA_MAJOR_CURRENCIES
+|   |       AUDUSD_60min.csv
+|   |       EURUSD_60min.csv
+|   |       GBPUSD_60min.csv
+|   |       NZDUSD_60min.csv
+|   |       USDCAD_60min.csv
+|   |       USDCHF_60min.csv
+|   |       USDJPY_60min.csv
+|   |       
+|   \---processed_features
+|           all_features.csv
+|           
++---features
+|   |   create_features.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           create_features.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---model
+|   |   evaluate_model.py
+|   |   label_encoder.joblib
+|   |   model.joblib
+|   |   train_model.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           evaluate_model.cpython-312.pyc
+|           
++---notebooks
+|       smc_experiments.ipynb
+|       
++---predict
+|   |   predict_direction.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           predict_direction.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---smc_indicators
+|   |   bos_detector.py
+|   |   fvg_detector.py
+|   |   liquidity_pools.py
+|   |   market_structure.py
+|   |   order_blocks.py
+|   |   support_resistance.py
+|   |   trend_detector.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           bos_detector.cpython-312.pyc
+|           fvg_detector.cpython-312.pyc
+|           liquidity_pools.cpython-312.pyc
+|           market_structure.cpython-312.pyc
+|           order_blocks.cpython-312.pyc
+|           support_resistance.cpython-312.pyc
+|           trend_detector.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
+\---utils
+    |   config.py
+    |   fetch_data.py
+    |   preprocess_data.py
+    |   __init__.py
+    |   
+    \---__pycache__
+            config.cpython-312.pyc
+            fetch_data.cpython-312.pyc
+            preprocess_data.cpython-312.pyc
+            __init__.cpython-312.pyc
+            

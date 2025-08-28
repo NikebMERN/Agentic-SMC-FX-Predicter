@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Prediction Result</title>
+</head>
+<body>
+    <h2>Prediction for {{ file }}</h2>
+
+    {% for result in results %}
+        <p><strong>Prediction:</strong> {{ result.prediction }}</p>
+        <p><strong>Action:</strong> {{ result.action }}</p>
+        <p><strong>Take Profit:</strong> {{ result.tp }}</p>
+        <p><strong>Stop Loss:</strong> {{ result.sl }}</p>
+        <p><strong>Confidence:</strong></p>
+        <ul>
+            {% for label, prob in result.confidence.items() %}
+                <li>{{ label }}: {{ prob }}</li>
+            {% endfor %}
+        </ul>
+        <hr>
+    {% endfor %}
+
+    <a href="/">🔙 Back</a>
+</body>
+</html>

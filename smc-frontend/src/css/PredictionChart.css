@@ -1,0 +1,8 @@
+.chart-container {
+  background-color: white;
+  padding: 1rem;
+  border-radius: 1rem;
+  color: black;
+  width: fit-content;
+  margin: auto;
+}

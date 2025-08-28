@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SMC Forex Predictor</title>
+</head>
+<body>
+    <h1>Select a Currency Pair</h1>
+    <form action="/predict" method="post">
+        <select name="selected_file">
+            {% for file in datasets %}
+                <option value="{{ file }}">{{ file }}</option>
+            {% endfor %}
+        </select>
+        <br><br>
+        <button type="submit">Predict</button>
+    </form>
+</body>
+</html>

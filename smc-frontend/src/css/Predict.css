@@ -1,0 +1,109 @@
+/* Predict.css */
+.predict-page {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* width: 100vh; */
+}
+.predict-container {
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    max-height: f;
+    max-width: fit-content;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    border-radius: 20px;
+    margin-top: 50px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    /* overflow: hidden; */
+}
+
+.overlay {
+    background-color: rgba(0, 0, 0, 0.65); /* Dark transparent overlay */
+    padding: 2rem;
+    border-radius: 20px;
+    max-width: 800px;
+    width: 100%;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.content {
+    color: #f1f1f1;
+}
+
+.content h1 {
+    font-size: 2.5rem;
+    color: #ffffff;
+    margin-bottom: 1rem;
+    text-align: center;
+    text-shadow: 1px 1px 5px rgba(0,0,0,0.5);
+}
+
+.content p, .content li {
+    font-size: 1.1rem;
+    line-height: 1.6;
+    margin: 1rem 0;
+}
+
+ul {
+    padding-left: 1.5rem;
+}
+
+li span {
+    font-weight: bold;
+}
+
+.final-action {
+    font-size: 1.8rem;
+    font-weight: bolder;
+    text-align: center;
+    margin-top: 2rem;
+}
+
+.RED {
+    color: #ff4d4d; /* Red for Buy action */
+    font-weight: bold;
+    font-size: large;
+}
+
+.LIGHT-RED {
+    color: #ff9999; /* Light Red for Weak Downtrend */
+    font-weight: bold;
+    font-size: large;
+}
+
+.GREEN {
+    color: #4dff4d; /* Green for Sell action */
+    font-weight: bold;
+    font-size: large;
+}
+
+.LIGHT-GREEN {
+    color: #99ff99; /* Light Green for Weak Uptrend */
+    font-weight: bold;
+    font-size: large;
+}
+
+.BLACK {
+    color: #fff204; /* Neutral for other actions */
+    font-weight: bold;
+    font-size: large;
+}
+
+@media screen and (max-width: 600px) {
+    .overlay {
+        padding: 1rem;
+    }
+
+    .content h1 {
+        font-size: 2rem;
+    }
+
+    .final-action {
+        font-size: 1.5rem;
+    }
+}

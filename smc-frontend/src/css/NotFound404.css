@@ -1,0 +1,51 @@
+/* src/components/NotFound404.css */
+.notfound-container {
+  height: 100vh;
+  width: 100%;
+  background-image: url('../assets/404bg.jpg'); /* Replace with your own image path */
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  text-align: center;
+  padding: 2rem;
+  background-color: #111; /* fallback color */
+}
+
+.notfound-content {
+  background-color: rgba(0, 0, 0, 0.65);
+  padding: 2rem 3rem;
+  border-radius: 12px;
+  box-shadow: 0 8px 16px rgba(0,0,0,0.4);
+  max-width: 600px;
+}
+
+.notfound-title {
+  font-size: 6rem;
+  font-weight: 900;
+  margin-bottom: 1rem;
+  color: #ff5f57;
+}
+
+.notfound-message {
+  font-size: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.notfound-button {
+  padding: 0.75rem 2rem;
+  font-size: 1.1rem;
+  border: none;
+  border-radius: 50px;
+  background-color: #ff5f57;
+  color: white;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+
+.notfound-button:hover {
+  background-color: #e04e45;
+}

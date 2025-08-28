@@ -1,0 +1,22 @@
+.currency-card {
+  cursor: pointer;
+  width: 100%;
+  max-width: 240px;
+  background: linear-gradient(135deg, #6366f1, #a855f7);
+  color: white;
+  border-radius: 1.5rem;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.25);
+  padding: 1.5rem;
+  margin: 1rem;
+  transition: transform 0.3s;
+  text-align: center;
+}
+
+.card-content h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: 0.05rem;
+}
+/* .currency-card:hover {
+  transform: translateY(-0.5rem);
+} */
