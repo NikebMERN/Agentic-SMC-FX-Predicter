@@ -1,0 +1,18 @@
+# db/session.py
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+from utils.config import DATABASE_URL
+
+# Base for models
+Base = declarative_base()
+
+# MySQL engine
+engine = create_engine(
+    DATABASE_URL,
+    echo=False,
+    pool_pre_ping=True
+)
+
+# Session factory
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
