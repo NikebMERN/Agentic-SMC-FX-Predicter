@@ -1,52 +1,57 @@
-# security.py
-import os
+# utils/security.py
 import jwt
 import datetime
-from flask import request, jsonify
-from functools import wraps
+from werkzeug.security import generate_password_hash, check_password_hash
+import os
 from dotenv import load_dotenv
 
+# Load environment variables from .env
 load_dotenv()
 
 # Secret key for JWT
-SECRET_KEY = os.getenv("SECRET_KEY", "default_secret_key")
+SECRET_KEY = os.getenv("SECRET_KEY", "weak_secret_key")
 
+# Hash a password
+def hash_password(password: str) -> str:
+    return generate_password_hash(password)
 
-def generate_token(user_id, expires_in=3600):
-    """Generate JWT token for a user"""
+# Verify a password
+def check_password(password: str, password_hash: str) -> bool:
+    return check_password_hash(password_hash, password)
+
+# Generate JWT token
+def generate_token(user_id: int):
     payload = {
         "user_id": user_id,
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(seconds=expires_in),
-        "iat": datetime.datetime.utcnow()
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1)  # token expiry
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    return token
 
-
-def verify_token(token):
-    """Verify and decode JWT token"""
-    try:
-        decoded = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        return decoded
-    except jwt.ExpiredSignatureError:
-        return None  # expired
-    except jwt.InvalidTokenError:
-        return None  # invalid
-
+# Token verification decorator (Flask)
+from functools import wraps
+from flask import request, jsonify
 
 def token_required(f):
-    """Decorator to protect routes"""
-    @wraps(f)
+    @wraps(f)  # ← this preserves the original function metadata
     def decorated(*args, **kwargs):
         token = None
         if "Authorization" in request.headers:
-            token = request.headers["Authorization"].split(" ")[1]  # Bearer <token>
-        
+            auth_header = request.headers["Authorization"]
+            if auth_header.startswith("Bearer "):
+                token = auth_header.split(" ")[1]
+
         if not token:
-            return jsonify({"error": "Token is missing!"}), 401
+            return jsonify({"error": "Token is missing"}), 401
 
-        decoded = verify_token(token)
-        if not decoded:
-            return jsonify({"error": "Invalid or expired token!"}), 401
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+            user_id = payload.get("user_id")
+        except jwt.ExpiredSignatureError:
+            return jsonify({"error": "Token expired"}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({"error": "Invalid token"}), 401
 
-        return f(decoded["user_id"], *args, **kwargs)
+        return f(user_id, *args, **kwargs)
+
     return decorated

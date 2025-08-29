@@ -1,12 +1,14 @@
 # db/init_db.py
+import sys
+import os
 
-from db.session import Base, engine
-from db import models
+# Make sure parent folder is in path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-def init_db():
-    print("Creating database tables...")
-    Base.metadata.create_all(bind=engine)
-    print("✅ Done.")
+from session import Base, engine
+from models import User, Account, Trade, Signal, TelegramLink, EquitySnapshot  # <-- import the classes, not "models"
 
-if __name__ == "__main__":
-    init_db()
+# Create all tables
+Base.metadata.create_all(bind=engine)
+
+print("✅ Database tables created successfully!")

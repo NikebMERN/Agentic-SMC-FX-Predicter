@@ -1,0 +1,250 @@
+{
+	"info": {
+		"name": "SMC Forex Predictor API",
+		"_postman_id": "smc-forex-api",
+		"description": "Postman collection for testing SMC Forex Predictor API",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Register User",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"username\": \"nikeb\",\n  \"email\": \"nikeb@example.com\",\n  \"password\": \"123456\"\n}"
+				},
+				"url": {
+					"raw": "http://127.0.0.1:5000/register",
+					"protocol": "http",
+					"host": [
+						"127.0.0.1"
+					],
+					"port": "5000",
+					"path": [
+						"register"
+					]
+				}
+			}
+		},
+		{
+			"name": "Login User",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"email\": \"nikeb@example.com\",\n  \"password\": \"123456\"\n}"
+				},
+				"url": {
+					"raw": "http://127.0.0.1:5000/login",
+					"protocol": "http",
+					"host": [
+						"127.0.0.1"
+					],
+					"port": "5000",
+					"path": [
+						"login"
+					]
+				}
+			}
+		},
+		{
+			"name": "Create Account",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "Authorization",
+						"value": "Bearer {{JWT_TOKEN}}"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"name\": \"Demo Account\",\n  \"balance\": 1000,\n  \"risk_pct\": 0.01,\n  \"leverage\": 100\n}"
+				},
+				"url": {
+					"raw": "http://127.0.0.1:5000/accounts",
+					"protocol": "http",
+					"host": [
+						"127.0.0.1"
+					],
+					"port": "5000",
+					"path": [
+						"accounts"
+					]
+				}
+			}
+		},
+		{
+			"name": "List Accounts",
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Authorization",
+						"value": "Bearer {{JWT_TOKEN}}"
+					}
+				],
+				"url": {
+					"raw": "http://127.0.0.1:5000/accounts",
+					"protocol": "http",
+					"host": [
+						"127.0.0.1"
+					],
+					"port": "5000",
+					"path": [
+						"accounts"
+					]
+				}
+			}
+		},
+		{
+			"name": "Start Agent Loop",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "Authorization",
+						"value": "Bearer {{JWT_TOKEN}}"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"account_id\": 1,\n  \"chat_id\": \"<YOUR_TELEGRAM_CHAT_ID>\"\n}"
+				},
+				"url": {
+					"raw": "http://127.0.0.1:5000/agent/start",
+					"protocol": "http",
+					"host": [
+						"127.0.0.1"
+					],
+					"port": "5000",
+					"path": [
+						"agent",
+						"start"
+					]
+				}
+			}
+		},
+		{
+			"name": "List Data Files",
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Authorization",
+						"value": "Bearer {{JWT_TOKEN}}"
+					}
+				],
+				"url": {
+					"raw": "http://127.0.0.1:5000/data",
+					"protocol": "http",
+					"host": [
+						"127.0.0.1"
+					],
+					"port": "5000",
+					"path": [
+						"data"
+					]
+				}
+			}
+		},
+		{
+			"name": "Predict Currency Pair",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "Authorization",
+						"value": "Bearer {{JWT_TOKEN}}"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"filename\": \"NZDUSD_60min.csv\"\n}"
+				},
+				"url": {
+					"raw": "http://127.0.0.1:5000/predict",
+					"protocol": "http",
+					"host": [
+						"127.0.0.1"
+					],
+					"port": "5000",
+					"path": [
+						"predict"
+					]
+				}
+			}
+		},
+		{
+			"name": "List Trades",
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Authorization",
+						"value": "Bearer {{JWT_TOKEN}}"
+					}
+				],
+				"url": {
+					"raw": "http://127.0.0.1:5000/trades",
+					"protocol": "http",
+					"host": [
+						"127.0.0.1"
+					],
+					"port": "5000",
+					"path": [
+						"trades"
+					]
+				}
+			}
+		},
+		{
+			"name": "List Signals",
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Authorization",
+						"value": "Bearer {{JWT_TOKEN}}"
+					}
+				],
+				"url": {
+					"raw": "http://127.0.0.1:5000/signals",
+					"protocol": "http",
+					"host": [
+						"127.0.0.1"
+					],
+					"port": "5000",
+					"path": [
+						"signals"
+					]
+				}
+			}
+		}
+	]
+}
