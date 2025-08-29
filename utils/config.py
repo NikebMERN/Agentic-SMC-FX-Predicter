@@ -1,6 +1,6 @@
 # utils/config.py
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv # type: ignore
 
 # Load environment variables from .env
 load_dotenv()

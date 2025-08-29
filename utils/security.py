@@ -1,9 +1,9 @@
 # utils/security.py
-import jwt
+import jwt # type: ignore
 import datetime
-from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash # type: ignore
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv # type: ignore
 
 # Load environment variables from .env
 load_dotenv()
@@ -30,7 +30,7 @@ def generate_token(user_id: int):
 
 # Token verification decorator (Flask)
 from functools import wraps
-from flask import request, jsonify
+from flask import request, jsonify # type: ignore
 
 def token_required(f):
     @wraps(f)  # ← this preserves the original function metadata

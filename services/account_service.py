@@ -3,7 +3,7 @@ from db.session import SessionLocal
 from db.models import Account
 
 def create_account(user_id: int, name: str, balance: float = 0.0, base_risk_pct: float = 0.01, leverage: int = 100):
-    db: Session = SessionLocal()
+    db: Session = SessionLocal() # type: ignore
     try:
         # Ensure unique account name for this user
         original_name = name

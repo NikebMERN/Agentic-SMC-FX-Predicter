@@ -1,8 +1,8 @@
 # app.py
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from flask import Flask, request, jsonify # type: ignore
+from flask_cors import CORS # type: ignore
 import os
-import pandas as pd
+import pandas as pd # type: ignore
 from predict.predict_direction import predict_market_direction
 from utils.security import generate_token, token_required
 from services.user_service import register_user, login_user, get_user_by_id
@@ -145,7 +145,7 @@ def list_signals(user_id):
 # ---------------- AGENT LOOP ----------------
 def run_agent_in_thread(user_id, account_id, chat_id, symbol):
     # Example placeholder for your threaded agent logic
-    Thread(target=lambda: print(f"Running agent for {user_id}, {account_id}, {symbol}")).start()
+    Thread(target=lambda: print(f"Running agent for {user_id}, {account_id}, {symbol}")).start() # type: ignore
 
 @app.route("/agent/start", methods=["POST"])
 @token_required

@@ -5,10 +5,10 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from datetime import datetime
-from sqlalchemy import (
+from sqlalchemy import ( # type: ignore
     Column, Integer, String, Float, DateTime, Enum, ForeignKey, Boolean, Index, UniqueConstraint
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship # type: ignore
 from db.session import Base 
 # from session import Base # Use this code when you create the tables
 
