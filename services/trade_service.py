@@ -7,10 +7,10 @@ OUTCOME_WIN = 10
 OUTCOME_LOSS = -5
 OUTCOME_NEUTRAL = 0
 
-# Simple pip value helper (replace missing pip_value_per_lot)
-def pip_value_per_lot(symbol: str, price: float) -> float:
+# ✅ FIXED: accept entry_price explicitly
+def pip_value_per_lot(symbol: str) -> float:
     pip_size = 0.01 if symbol.upper().endswith("JPY") else 0.0001
-    return 100_000 * pip_size
+    return 100_000 * pip_size  # simplified pip value per lot
 
 def open_trade(user_id: int, account_id: int, symbol: str, side: str, entry_price: float,
                stop_loss: float, take_profit: float | None, lot_size: float, confidence: float):
@@ -45,7 +45,7 @@ def close_trade(trade_id: int, exit_price: float):
         if not trade:
             return None
         pip_size = 0.01 if trade.symbol.upper().endswith("JPY") else 0.0001
-        pip_val = pip_value_per_lot(trade.symbol, trade.entry_price)
+        pip_val = pip_value_per_lot(trade.symbol, entry_price=trade.entry_price)  # ✅ FIXED
         if trade.side.upper() == "BUY":
             pips = (exit_price - trade.entry_price) / pip_size
         else:
@@ -72,7 +72,6 @@ def close_trade(trade_id: int, exit_price: float):
     finally:
         db.close()
 
-# ---------------- NEW FUNCTION ----------------
 def get_trades(user_id: int, account_id: int | None = None):
     """Return list of trades for a user (optionally filter by account)."""
     db = SessionLocal()

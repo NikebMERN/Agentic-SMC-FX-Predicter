@@ -2,7 +2,7 @@
 from db.session import SessionLocal
 from db.models import User
 from utils.security import hash_password, check_password, generate_token
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError # type: ignore
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))

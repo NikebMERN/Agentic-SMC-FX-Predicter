@@ -9,6 +9,14 @@ from utils.config import DATABASE_URL
 # Base for models
 Base = declarative_base()
 
+# DB
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
 # MySQL engine
 engine = create_engine(
     DATABASE_URL,

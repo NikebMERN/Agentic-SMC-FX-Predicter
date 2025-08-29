@@ -27,7 +27,7 @@ def decide_action(confidence_scores):
 
 def calculate_tp_sl(csv_file_path, action, sl_pips=10, risk_reward_ratio=2):
     """Calculate TP and SL in pips based on last close price."""
-    import pandas as pd
+    import pandas as pd # type: ignore
 
     df = pd.read_csv(csv_file_path)
     if df.empty or "Close" not in df.columns:
