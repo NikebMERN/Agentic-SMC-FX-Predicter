@@ -1,123 +1,124 @@
-# services/agent_loop.py
 import os
-import time
-from datetime import datetime
-from services.notifier import send_message
-from services.trade_service import open_trade
-from services.signal_service import create_signal
-from services.risk import calculate_lot_size
-from predict.predict_direction import predict_market_direction
-from utils.config import DATA_FOLDER
+import sys
+import subprocess
+import requests  # type: ignore
 
-DEFAULT_RISK_PCT = 0.01  # fallback if account not specified
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from utils.config import TELEGRAM_BOT_TOKEN
 
-# ---------------- UTILS ----------------
-def decide_action(confidence_scores):
-    """Determine trading action based on model's confidence scores."""
-    if not confidence_scores:
-        return "Don't Enter"
-    top_label, _ = max(confidence_scores.items(), key=lambda x: x[1])
-    label = top_label.lower()
-    if label in ["strong uptrend", "buy"]:
-        return "Buy"
-    elif label in ["strong downtrend", "sell"]:
-        return "Sell"
-    else:
-        return "Don't Enter"
+# ==== TELEGRAM CONFIG ====
+TELEGRAM_TOKEN = TELEGRAM_BOT_TOKEN
 
-def calculate_tp_sl(csv_file_path, action, sl_pips=10, risk_reward_ratio=2):
-    """Calculate TP and SL in pips based on last close price."""
-    import pandas as pd # type: ignore
+# Project root
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-    df = pd.read_csv(csv_file_path)
-    if df.empty or "Close" not in df.columns:
-        return None, None
+def get_latest_chat_id():
+    """Fetch the latest active Telegram chat_id."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    try:
+        res = requests.get(url).json()
+        chat_ids = [
+            update["message"]["chat"]["id"]
+            for update in res.get("result", [])
+            if "message" in update
+        ]
+        if chat_ids:
+            return chat_ids[-1]
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch chat_id: {e}")
+    return None
 
-    last_close = df["Close"].iloc[-1]
-    pip_size = 0.01 if "JPY" in csv_file_path.upper() else 0.0001
-    tp_pips = sl_pips * risk_reward_ratio
+def update_config(symbol: str):
+    """Update only the SYMBOL variable in utils/config.py without overwriting the rest."""
+    config_path = os.path.join(PROJECT_ROOT, "utils", "config.py")
+    lines = []
 
-    if action == "Buy":
-        sl = last_close - (sl_pips * pip_size)
-        tp = last_close + (tp_pips * pip_size)
-    elif action == "Sell":
-        sl = last_close + (sl_pips * pip_size)
-        tp = last_close - (tp_pips * pip_size)
-    else:
-        return None, None
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            lines = f.readlines()
 
-    return round(tp, 5), round(sl, 5)
+    symbol_set = False
+    with open(config_path, "w") as f:
+        for line in lines:
+            if line.strip().startswith("SYMBOL"):
+                f.write(f'SYMBOL = "{symbol}"\n')
+                symbol_set = True
+            else:
+                f.write(line)
+        if not symbol_set:
+            f.write(f'\nSYMBOL = "{symbol}"\n')
 
-# ---------------- AGENT LOOP ----------------
-def agent_loop(user_id: int, account_id: int, chat_id: str, symbol: str = "NZDUSD", interval_sec: int = 3600):
-    """
-    Core agent loop:
-    1. Fetch latest market data (CSV based on symbol).
-    2. Run SMC predictor.
-    3. Decide Buy/Sell/Skip.
-    4. Calculate lot size based on account & risk.
-    5. Open trade & save signal.
-    6. Notify user via Telegram.
-    """
-    print(f"[AgentLoop] Started at {datetime.utcnow()} for user {user_id}, symbol {symbol}")
+    print(f"[CONFIG] Updated SYMBOL in config.py -> {symbol}")
 
-    while True:
-        try:
-            # Build CSV path dynamically
-            file_name = f"{symbol}_60min.csv"  # assuming folder structure DATA_FOLDER/SYMBOL_60min.csv
-            file_path = os.path.join(DATA_FOLDER, file_name)
+def run_script(script_path: str, step_name: str):
+    """Run a Python script with real-time console output from project root."""
+    abs_path = os.path.join(PROJECT_ROOT, script_path)
+    print(f"\n[RUN] {step_name} ({script_path}) ...")
+    try:
+        process = subprocess.Popen(
+            ["python", abs_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=PROJECT_ROOT
+        )
+        for line in process.stdout:
+            print(line, end="")
+        process.wait()
+        if process.returncode != 0:
+            print(f"[ERROR] {step_name} failed (exit code {process.returncode}).")
+            return False
+        print(f"[SUCCESS] {step_name} completed.")
+        return True
+    except Exception as e:
+        print(f"[ERROR] {step_name} failed: {e}")
+        return False
 
-            if not os.path.exists(file_path):
-                print(f"[AgentLoop] CSV not found for {symbol}: {file_path}")
-                time.sleep(interval_sec)
-                continue
+def run_fetch(symbol: str):
+    """Run all required scripts for the given symbol."""
+    # Ensure the data folder exists
+    data_folder = os.path.join(PROJECT_ROOT, "data")
+    os.makedirs(data_folder, exist_ok=True)
 
-            # Run prediction
-            predictions = predict_market_direction(file_path)
+    scripts = [
+        ("Fetching market data", "utils/fetch_data.py"),
+        ("Creating features", "features/create_features.py"),
+        ("Training model", "model/train_model.py"),
+        ("Evaluating model", "model/evaluate_model.py")
+    ]
 
-            for label, conf_scores in predictions:
-                action = decide_action(conf_scores)
-                confidence = max(conf_scores.values()) if conf_scores else 0
+    for step_name, script_path in scripts:
+        success = run_script(script_path, step_name)
+        if not success:
+            print(f"[FETCH] Stopped at {step_name} for {symbol}.")
+            return False
 
-                # Calculate TP/SL
-                tp, sl = calculate_tp_sl(file_path, action)
+    print(f"[FETCH] All steps completed for {symbol} successfully.")
+    return True
 
-                # Save signal
-                signal = create_signal(
-                    user_id=user_id,
-                    symbol=symbol,
-                    timeframe="1h",
-                    side=action,
-                    confidence=confidence,
-                    entry_price=0,  # could be last_close from CSV
-                    stop_pips=10
-                )
+def notify(symbol: str):
+    """Send a Telegram notification to the latest active chat."""
+    chat_id = get_latest_chat_id()
+    if not chat_id:
+        print("[WARN] No active chat_id found. Skipping notify.")
+        return
 
-                # Calculate lot size
-                lot_size = calculate_lot_size(account_id, action, risk_pct=DEFAULT_RISK_PCT)
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    msg = f"✅ {symbol} CSV updated successfully."
+    try:
+        requests.post(url, data={"chat_id": chat_id, "text": msg})
+        print(f"[NOTIFY] Sent Telegram alert for {symbol} to chat_id {chat_id}")
+    except Exception as e:
+        print(f"[ERROR] Telegram notify failed: {e}")
 
-                # Open trade if action is Buy/Sell
-                if action != "Don't Enter":
-                    open_trade(
-                        user_id=user_id,
-                        account_id=account_id,
-                        symbol=symbol,
-                        side=action,
-                        entry_price=0,  # could be last_close
-                        stop_loss=sl or 0,
-                        take_profit=tp or 0,
-                        lot_size=lot_size,
-                        confidence=confidence
-                    )
+def fetch_single_symbol(symbol: str):
+    """Fetch latest data and retrain model for a single currency pair."""
+    print(f"\n=== Processing {symbol} ===")
+    update_config(symbol)
+    success = run_fetch(symbol)
+    if success:
+        notify(symbol)
 
-                # Notify via Telegram
-                send_message(
-                    chat_id,
-                    f"[Signal] {action} {symbol} | Confidence: {confidence*100:.2f}% | Lot: {lot_size} | TP: {tp} | SL: {sl}"
-                )
-
-        except Exception as e:
-            print(f"[AgentLoop] Error: {e}")
-
-        # Wait for next interval
-        time.sleep(interval_sec)
+# Example usage:
+# if __name__ == "__main__":
+#     fetch_single_symbol("EURUSD")

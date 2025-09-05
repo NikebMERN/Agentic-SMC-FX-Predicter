@@ -2,10 +2,19 @@ import os
 import sys
 import pandas as pd  # type: ignore
 
-# Make sure relative imports work
+# Ensure UTF-8 output for Windows console
+sys.stdout.reconfigure(encoding='utf-8')
+
+# Add project root to path for relative imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# === Imports from modules ===
+# Ensure required directories exist
+DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'data')
+PROCESSED_DIR = os.path.join(DATA_DIR, 'processed_features')
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(PROCESSED_DIR, exist_ok=True)
+
+# === Imports from your modules ===
 from utils.preprocess_data import preprocess_data
 from smc_indicators.trend_detector import detect_trend
 from smc_indicators.support_resistance import find_support_resistance
@@ -15,8 +24,7 @@ from smc_indicators.fvg_detector import detect_fvg
 from smc_indicators.order_blocks import detect_order_blocks
 from smc_indicators.liquidity_pools import detect_liquidity_pools_with_time
 
-
-# 🔁 Combine SMC & SMA trends
+# 🔁 Combine SMA and SMC trends
 def combine_trends(sma, smc):
     if sma == 'Uptrend' and smc == 'Uptrend':
         return 'Strong Uptrend'
@@ -31,17 +39,16 @@ def combine_trends(sma, smc):
     else:
         return 'Conflict'
 
-
 def extract_features(csv_path):
     df = preprocess_data(csv_path)
 
-    # Step 1: Detect trend using SMA
+    # Step 1: SMA trend
     sma_trend = detect_trend(df)
 
-    # Step 2: Support/Resistance
+    # Step 2: Support & Resistance
     support_levels, resistance_levels = find_support_resistance(df)
 
-    # Step 3: Market structure swings + SMC trend
+    # Step 3: Market structure swings
     swings = detect_swings(df)
     labeled_swings = label_market_structure(swings)
     smc_trend = identify_market_trend_from_labels(labeled_swings)
@@ -49,7 +56,6 @@ def extract_features(csv_path):
     labeled_swings_df = pd.DataFrame(labeled_swings)
     if 'index' not in labeled_swings_df.columns:
         labeled_swings_df['index'] = labeled_swings_df.index
-
     if 'timestamp' not in labeled_swings_df.columns:
         labeled_swings_df['timestamp'] = labeled_swings_df['index']
 
@@ -61,10 +67,10 @@ def extract_features(csv_path):
     ob_df = detect_order_blocks(df)
     liquidity_df = detect_liquidity_pools_with_time(labeled_swings_df)
 
-    # === Combine trend signals ===
+    # Combine trends
     combined_trend = combine_trends(sma_trend, smc_trend)
 
-    # === Feature Summary ===
+    # Summary
     summary = {
         "sma_trend": sma_trend,
         "smc_trend": smc_trend,
@@ -77,15 +83,14 @@ def extract_features(csv_path):
         "num_liquidity_pools": len(liquidity_df),
     }
 
-    return pd.DataFrame([summary])  # One row per file
+    return pd.DataFrame([summary])
 
-
-def batch_extract_features(input_dir="data", output_dir="data/processed_features"):
+def batch_extract_features(input_dir=DATA_DIR, output_dir=PROCESSED_DIR):
     os.makedirs(output_dir, exist_ok=True)
     summary_list = []
 
     for file in os.listdir(input_dir):
-        if file.endswith(".csv"):
+        if file.endswith(".csv") and not file.endswith("_features.csv"):
             file_path = os.path.join(input_dir, file)
             print(f"🛠️ Extracting features from: {file}")
             try:
@@ -98,11 +103,10 @@ def batch_extract_features(input_dir="data", output_dir="data/processed_features
     if summary_list:
         final_df = pd.concat(summary_list, ignore_index=True)
         output_path = os.path.join(output_dir, "all_features.csv")
-        final_df.to_csv(output_path, index=False)
+        final_df.to_csv(output_path, index=False, encoding='utf-8')
         print(f"\n✅ Feature extraction complete. Saved to: {output_path}")
     else:
         print("⚠️ No features extracted.")
-
 
 if __name__ == "__main__":
     batch_extract_features()

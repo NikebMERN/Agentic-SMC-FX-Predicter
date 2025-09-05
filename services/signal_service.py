@@ -49,7 +49,7 @@ def create_signal(
 
 
 # ---------------- GET SIGNALS ----------------
-def get_signals(user_id: int, account_id: int | None = None, db=None):
+def get_signals(user_id: int, db=None):
     """
     Return list of signals for a user (optionally filter by account).
     
@@ -61,7 +61,8 @@ def get_signals(user_id: int, account_id: int | None = None, db=None):
     Returns:
         list[Signal]: List of signals.
     """
-    query = db.query(Signal).filter(Signal.user_id == user_id)
-    if account_id:
-        query = query.filter(Signal.account_id == account_id)
-    return query.all()
+    try:
+        signals = db.query(Signal).filter_by(user_id=user_id).all()
+        return signals
+    finally:
+        db.close()

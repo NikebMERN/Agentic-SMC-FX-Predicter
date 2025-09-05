@@ -9,8 +9,8 @@ load_dotenv()
 # External API Configuration
 # -----------------------------
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
-SYMBOL = "NZDUSD"
-INTERVAL = "5min"
+SYMBOL = "AUDUSD"
+INTERVAL = "60min"
 
 # -----------------------------
 # Database Configuration

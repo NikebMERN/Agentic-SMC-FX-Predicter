@@ -1,12 +1,23 @@
 import requests # type: ignore
 import pandas as pd # type: ignore
 import os
+import sys
 from datetime import datetime
 from config import ALPHA_VANTAGE_API_KEY, SYMBOL, INTERVAL
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# Ensure the data folder exists
+import os
+
+DATA_FOLDER = os.path.join(os.path.dirname(__file__), "..", "data")
+os.makedirs(DATA_FOLDER, exist_ok=True)  # <-- creates the folder if missing
+
+OUTPUT_FILE = os.path.join(DATA_FOLDER, f"{SYMBOL}_{INTERVAL}.csv")
+
 # Constants
 BASE_URL = "https://www.alphavantage.co/query"
-OUTPUT_FILE = f"data/{SYMBOL}_{INTERVAL}.csv"  # Save to root directory
+# OUTPUT_FILE = f"data/{SYMBOL}_{INTERVAL}.csv"  # Save to root directory
 
 def fetch_intraday_data(symbol=SYMBOL, interval=INTERVAL, api_key=ALPHA_VANTAGE_API_KEY):
     print(f"[INFO] Fetching intraday data for {symbol} @ {interval}...")

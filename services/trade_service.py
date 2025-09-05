@@ -2,6 +2,7 @@
 from db.session import SessionLocal
 from db.models import Trade, Account
 from datetime import datetime
+from services.agent_loop import fetch_single_symbol
 
 OUTCOME_WIN = 10
 OUTCOME_LOSS = -5
@@ -38,21 +39,57 @@ def open_trade(user_id: int, account_id: int, symbol: str, side: str, entry_pric
     finally:
         db.close()
 
-def close_trade(trade_id: int, exit_price: float):
+def close_trade(trade_id: int, manual_close: bool = False):
+    """
+    Close a trade based on latest market data or user manual action.
+    Scenarios:
+    1. TP hit -> WIN
+    2. SL hit -> LOSS
+    3. Manual close -> calculate based on current price
+    """
     db = SessionLocal()
     try:
         trade = db.query(Trade).filter(Trade.id == trade_id).first()
         if not trade:
             return None
+
+        # Fetch latest market price for the symbol
+        latest_price = fetch_single_symbol(trade.symbol)
+        if latest_price is None:
+            latest_price = trade.entry_price  # fallback to entry price
+
+        # Determine exit price based on scenario
+        exit_price = None
+        if not manual_close:
+            # Check TP
+            if trade.tp and (
+                (trade.side.upper() == "BUY" and latest_price >= trade.tp) or
+                (trade.side.upper() == "SELL" and latest_price <= trade.tp)
+            ):
+                exit_price = trade.tp
+            # Check SL
+            elif trade.sl and (
+                (trade.side.upper() == "BUY" and latest_price <= trade.sl) or
+                (trade.side.upper() == "SELL" and latest_price >= trade.sl)
+            ):
+                exit_price = trade.sl
+
+        # Manual close or no TP/SL hit yet
+        if exit_price is None:
+            exit_price = latest_price
+
+        # Calculate PnL
         pip_size = 0.01 if trade.symbol.upper().endswith("JPY") else 0.0001
-        pip_val = pip_value_per_lot(trade.symbol, entry_price=trade.entry_price)  # ✅ FIXED
+        pip_val = pip_value_per_lot(trade.symbol)
         if trade.side.upper() == "BUY":
             pips = (exit_price - trade.entry_price) / pip_size
         else:
             pips = (trade.entry_price - exit_price) / pip_size
         pnl = pips * pip_val * trade.lot_size
+
+        # Update trade
         trade.closed_at = datetime.utcnow()
-        trade.status = 'CLOSED'
+        trade.status = "CLOSED"
         trade.pnl = round(pnl, 4)
         if pnl > 0:
             trade.outcome_score = OUTCOME_WIN
@@ -60,25 +97,35 @@ def close_trade(trade_id: int, exit_price: float):
             trade.outcome_score = OUTCOME_LOSS
         else:
             trade.outcome_score = OUTCOME_NEUTRAL
+
+        # Update account balance
         acct = db.query(Account).filter(Account.id == trade.account_id).first()
         if acct:
             acct.balance = (acct.balance or 0) + pnl
+
         db.commit()
         db.refresh(trade)
         return trade
+
     except Exception:
         db.rollback()
         raise
     finally:
         db.close()
 
-def get_trades(user_id: int, account_id: int | None = None):
+def get_trades(user_id: int):
     """Return list of trades for a user (optionally filter by account)."""
     db = SessionLocal()
     try:
-        query = db.query(Trade).filter(Trade.user_id == user_id)
-        if account_id is not None:
-            query = query.filter(Trade.account_id == account_id)
-        return query.all()
+        trades = db.query(Trade).filter_by(user_id=user_id).all()
+        return trades
+    finally:
+        db.close()
+
+def get_trade_by_id(trade_id: int):
+    db = SessionLocal()
+    try:
+        trade = db.query(Trade).filter(Trade.id == trade_id).first()
+        return trade
     finally:
         db.close()
