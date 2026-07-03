@@ -2,7 +2,7 @@
 from db.session import SessionLocal
 from db.models import Trade, Account
 from datetime import datetime
-from services.agent_loop import fetch_single_symbol
+from engine.data import get_latest_price
 
 OUTCOME_WIN = 10
 OUTCOME_LOSS = -5
@@ -54,7 +54,7 @@ def close_trade(trade_id: int, manual_close: bool = False):
             return None
 
         # Fetch latest market price for the symbol
-        latest_price = fetch_single_symbol(trade.symbol)
+        latest_price = get_latest_price(trade.symbol)
         if latest_price is None:
             latest_price = trade.entry_price  # fallback to entry price
 
@@ -62,17 +62,17 @@ def close_trade(trade_id: int, manual_close: bool = False):
         exit_price = None
         if not manual_close:
             # Check TP
-            if trade.tp and (
-                (trade.side.upper() == "BUY" and latest_price >= trade.tp) or
-                (trade.side.upper() == "SELL" and latest_price <= trade.tp)
+            if trade.take_profit and (
+                (trade.side.upper() == "BUY" and latest_price >= trade.take_profit) or
+                (trade.side.upper() == "SELL" and latest_price <= trade.take_profit)
             ):
-                exit_price = trade.tp
+                exit_price = trade.take_profit
             # Check SL
-            elif trade.sl and (
-                (trade.side.upper() == "BUY" and latest_price <= trade.sl) or
-                (trade.side.upper() == "SELL" and latest_price >= trade.sl)
+            elif trade.stop_loss and (
+                (trade.side.upper() == "BUY" and latest_price <= trade.stop_loss) or
+                (trade.side.upper() == "SELL" and latest_price >= trade.stop_loss)
             ):
-                exit_price = trade.sl
+                exit_price = trade.stop_loss
 
         # Manual close or no TP/SL hit yet
         if exit_price is None:
@@ -105,6 +105,11 @@ def close_trade(trade_id: int, manual_close: bool = False):
 
         db.commit()
         db.refresh(trade)
+        try:
+            from services.feedback_service import record_trade_outcome
+            record_trade_outcome(trade, None)
+        except Exception:
+            pass
         return trade
 
     except Exception:

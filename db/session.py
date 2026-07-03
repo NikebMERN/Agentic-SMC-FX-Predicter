@@ -17,11 +17,13 @@ def get_db():
     finally:
         db.close()
 
-# MySQL engine
+# Engine (MySQL in production; sqlite supported for dev/tests via DATABASE_URL)
+_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(
     DATABASE_URL,
     echo=False,
-    pool_pre_ping=True
+    pool_pre_ping=True,
+    connect_args=_connect_args,
 )
 
 # Session factory

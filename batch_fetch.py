@@ -1,43 +1,35 @@
 # batch_fetch.py
+"""Refresh the CSVs (and models) for all supported pairs.
 
-import subprocess
+No config rewriting — the symbol is passed straight into the engine.
+Alpha Vantage's free tier allows ~5 requests/minute, hence the pause.
+"""
 import time
 
-currency_pairs = [
-    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD", 
-    # "EURGBP", "EURJPY",
-    # "GBPJPY", "EURCHF", "AUDJPY", "CHFJPY", "EURAUD", "AUDCAD", "CADJPY", "EURNZD", "GBPAUD",
-    # "NZDJPY", "AUDNZD", "USDHKD", "USDSEK", "USDSGD", "USDZAR", "USDNOK", "EURCAD", "GBPCHF", 
-    # "GBPCAD", "NZDCAD", "AUDCHF", "NZDCHF", "CADCHF", "SGDJPY", "USDTRY", "EURPLN", "EURTRY", 
-    # "USDPLN", "USDTHB", "USDINR", "USDMXN", "USDCNH", "EURSEK", "EURNOK", "GBPZAR", "EURSGD",
-    # "EURZAR", "EURHKD", "EURMXN", "EURHUF", "GBPNZD", "GBPHKD", "GBPSGD", "GBPSEK", "GBPNOK",
-    # "GBPPLN", "AUDSGD", "HUFJPY", "AUDSEK", "AUDNOK", "AUDHKD", "AUDPLN", "CADSEK", "CADNOK",
-    # "CADHKD", "CADHUF", "CHFSGD", "NZDHKD", "NZDSEK", "NZDNOK", "NZDSGD", "CHFSGD", "CHFNOK",
-    # "CHFSEK", "CHFAUD", "CHFCAD", "CHFPLN", "SGDCAD", "SGDCHF", "SGDAUD", "SGDNZD", "NOKJPY", 
-    # "SEKJPY", "TRYJPY", "ZARJPY", "PLNJPY", "MXNJPY", "THBJPY", "CNHJPY", "INRJPY", "HKDJPY",
-    # "USDILS", "EURILS", "USDETB", "GBPILS", "AUDILS", "NZDILS", "CADILS", "CHFILS", "SGDILS",
-    # "USDHUF", "EURHUF", "GBPHUF", "AUDHUF",
-]
+from engine.data import get_data
+from engine.model_trainer import train_and_predict
+from utils.config import INTERVAL
+from utils.logger import get_logger
+from utils.settings import get_supported_pairs
 
-for symbol in currency_pairs:
-    print(f"\n=== Fetching {symbol} ===")
+log = get_logger("batch_fetch")
 
-    # Update config.py SYMBOL
-    with open("utils/config.py", "r") as f:
-        lines = f.readlines()
+PAUSE_SECONDS = 15
 
-    with open("utils/config.py", "w") as f:
-        for line in lines:
-            if line.startswith("SYMBOL"):
-                f.write(f'SYMBOL = "{symbol}"\n')
-            else:
-                f.write(line)
 
-    # Run the fetch_data script
-    try:
-        subprocess.run(["python", "utils/fetch_data.py"], check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"[ERROR] Fetch failed for {symbol}: {e}")
+def refresh_all(pairs=None, train: bool = True):
+    pairs = pairs or get_supported_pairs()
+    for symbol in pairs:
+        log.info("=== Refreshing %s ===", symbol)
+        try:
+            df, source = get_data(symbol, INTERVAL, fetch=True)
+            log.info("%s: %d candles (%s)", symbol, len(df), source)
+            if train:
+                train_and_predict(symbol, df, INTERVAL)
+        except Exception as exc:
+            log.error("Refresh failed for %s: %s", symbol, exc)
+        time.sleep(PAUSE_SECONDS)
 
-    # Optional: wait to avoid API rate limits
-    time.sleep(15)  # Alpha Vantage free tier has 5 calls/min limit
+
+if __name__ == "__main__":
+    refresh_all()

@@ -30,9 +30,14 @@ logs/
 *.sqlite3
 *.db
 
-# Environment variables
+# Environment variables and secrets
 .env
 .flaskenv
+Secured.txt
+
+# Frontend
+admin-frontend/node_modules/
+static/admin/
 
 # OS generated files
 .DS_Store          # macOS

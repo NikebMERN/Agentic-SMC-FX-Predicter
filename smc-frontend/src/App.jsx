@@ -1,35 +1,69 @@
-import { Routes, Route } from 'react-router-dom';
-import Home from './pages/Home';
-import Predict from './pages/Predict';
-import NOTPage from './pages/404Page';
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { AuthProvider } from "./context/AuthContext.jsx";
+import ProtectedRoute from "./components/ProtectedRoute.jsx";
+import PublicLayout from "./components/PublicLayout.jsx";
+import HomePage from "./pages/HomePage.jsx";
+import LoginPage from "./pages/LoginPage.jsx";
+import RegisterPage from "./pages/RegisterPage.jsx";
+import FeedbackPage from "./pages/FeedbackPage.jsx";
+import HistoryPage from "./pages/HistoryPage.jsx";
+import PredictPage from "./pages/PredictPage.jsx";
+import TelegramPage from "./pages/TelegramPage.jsx";
 
-const fakePredictionData = [
-  {
-    action: "don't enter",
-    confidence: {
-      Conflict: 1.0,
-      "Strong Downtrend": 64.0,
-      "Strong Uptrend": 11.0,
-      "Weak Downtrend": 10.0,
-      "Weak Uptrend": 14.0,
-    },
-    prediction: "weak uptrend",
-    stop_loss: 142.70033,
-    take_profit: 145.79834,
-  },
-];
-
-function App() {
+export default function App() {
   return (
-    <>
-    <Routes>
-      <Route path="/" element={<Home />} />
-      <Route path="/predict/:pair" element={<Predict data={fakePredictionData} pairName="EURUSD" />} />
-      <Route path="*" element={<NOTPage />} />
-    </Routes>
-    {/* <Predict data={fakePredictionData} pairName="EURUSD" /> */}
-    </>
+    <AuthProvider>
+      <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, "") || "/"}>
+        <Routes>
+          <Route element={<PublicLayout />}>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/register" element={<RegisterPage />} />
+            <Route
+              path="/feedback"
+              element={
+                <ProtectedRoute>
+                  <FeedbackPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/history"
+              element={
+                <ProtectedRoute>
+                  <HistoryPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/predict"
+              element={
+                <ProtectedRoute>
+                  <PredictPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/predict/:symbol"
+              element={
+                <ProtectedRoute>
+                  <PredictPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/telegram"
+              element={
+                <ProtectedRoute>
+                  <TelegramPage />
+                </ProtectedRoute>
+              }
+            />
+          </Route>
+          <Route path="/dashboard" element={<Navigate to="/feedback" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   );
 }
-
-export default App;

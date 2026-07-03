@@ -1,0 +1,11 @@
+.git
+.env
+Secured.txt
+__pycache__
+*.pyc
+logs/
+smc-frontend/node_modules
+smc-frontend/dist
+notebooks/
+test_smc.db
+*.docx

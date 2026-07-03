@@ -6,13 +6,14 @@ from services.account_service import get_account_by_id
 # ---------------- CREATE SIGNAL ----------------
 def create_signal(
     user_id: int,
-    # account_id: int,
     symbol: str,
     timeframe: str,
     side: str,
     confidence: float,
     entry_price: float,
     stop_pips: float = 10,
+    stop_loss: float | None = None,
+    take_profit: float | None = None,
     db=None
 ):
     """
@@ -32,13 +33,15 @@ def create_signal(
 
     signal = Signal(
         user_id=user_id,
-        # account_id=account_id,
         symbol=symbol.upper(),
         timeframe=timeframe,
         side=side.upper(),
         confidence=confidence,
         entry_price=entry_price,
         stop_pips=stop_pips,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        status="OPEN",
         created_at=datetime.utcnow()
     )
 
