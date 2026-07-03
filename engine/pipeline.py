@@ -201,10 +201,19 @@ def format_result_text(result: dict, markdown: bool = False) -> str:
         f"({d['confluences']} valid confluences)",
     ]
     if confluence.is_trade_action(d["action"]):
+        sl_extra = (
+            f" ({d['sl_pips']} pips / {d['sl_pct']}%)"
+            if d.get("sl_pips") is not None else ""
+        )
+        tp_extra = (
+            f" ({d['tp_pips']} pips / {d['tp_pct']}%)"
+            if d.get("tp_pips") is not None else ""
+        )
         lines += [
             f"Entry: {d['entry']}",
-            f"Invalidation: {d.get('invalidation_price') or d.get('stop_loss')}",
-            f"Target liquidity: {d.get('target_liquidity') or d.get('take_profit')} (RR {d['risk_reward']})",
+            f"Stop Loss: {d.get('invalidation_price') or d.get('stop_loss')}{sl_extra}",
+            f"Take Profit: {d.get('target_liquidity') or d.get('take_profit')}{tp_extra}",
+            f"Risk/Reward: {d['risk_reward']}",
         ]
     elif d["action"] == confluence.ACTION_WAIT:
         lines.append("Setup forming — wait for confirmation before acting.")

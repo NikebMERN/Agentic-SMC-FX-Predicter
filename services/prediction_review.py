@@ -266,6 +266,11 @@ def create_review(
             row.snapshot_path = path
             db.commit()
 
+        # The commits above expire the row's attributes; reload them and
+        # detach cleanly so callers can read .id etc. after the session
+        # closes (otherwise: DetachedInstanceError -> web /analyze 500s).
+        db.refresh(row)
+        db.expunge(row)
         return row
     except Exception:
         log.exception("Failed to create prediction review")

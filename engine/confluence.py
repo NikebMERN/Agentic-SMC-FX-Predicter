@@ -45,6 +45,12 @@ MIN_GAP = 1.0            # and beat the other side by this
 MIN_CONFLUENCES = 2      # distinct valid signals agreeing
 EXTREME_PREMIUM = 0.80   # no longs above, no shorts below (1 - x)
 MIN_RISK_REWARD = 1.5
+
+# Realistic level distances as a percent of price (admin-tunable via the
+# settings table: sl_max_pct / tp_max_pct). 0.40% ~= 40 pips on EURUSD.
+SL_MAX_PCT_DEFAULT = 0.40
+TP_MAX_PCT_DEFAULT = 0.80
+TARGET_SWING_BARS = 60  # TP swing candidates come from recent structure only
 MIN_FINAL_CONFIDENCE = 0.55  # blended confidence floor for a trade
 
 STRATEGY_MODES = frozenset({"both", "smc", "ict"})
@@ -321,62 +327,102 @@ def _detect_wait_setup(analysis: dict, votes: list, direction: str, vetoes: list
 
 
 def _stop_and_target(analysis: dict, direction: str, decimals: int) -> dict:
-    """Structure-based SL/TP: stop beyond protective structure, target at
-    the nearest opposing unswept liquidity, minimum RR enforced."""
+    """Realistic SL/TP: structure-based placement CAPPED at a configurable
+    percent of price so levels stay reachable on the actual chart.
+
+    - Stop: beyond the nearest protective structure, but never farther
+      than sl_max_pct of price (admin setting; default 0.40%).
+    - Target: nearest opposing unswept liquidity or a RECENT swing
+      (last TARGET_SWING_BARS bars — never the multi-month extreme of the
+      whole history), within tp_max_pct; otherwise a capped risk multiple.
+    Each level reports its pip/percent distance and what it was based on.
+    """
     price = analysis["price"]
     atr_val = analysis["atr"]
     buffer = 0.25 * atr_val
     swings = analysis["swings"]
+    n = analysis["bars"]
+    symbol = analysis["symbol"]
 
-    if direction == "bullish":
+    sl_cap = price * settings.get_float("sl_max_pct", SL_MAX_PCT_DEFAULT) / 100.0
+    tp_cap = price * settings.get_float("tp_max_pct", TP_MAX_PCT_DEFAULT) / 100.0
+    bullish = direction == "bullish"
+
+    # --- protective structure -> stop distance --------------------------
+    if bullish:
         protectors = [ob["low"] for ob in analysis["valid_order_blocks"]
                       if ob["direction"] == "bullish" and ob["low"] < price]
-        protectors += [s["level"] for s in analysis["sweeps"] if s["side"] == "sellside" and s["level"] < price]
+        protectors += [s["level"] for s in analysis["sweeps"]
+                       if s["side"] == "sellside" and s["level"] < price]
         if not swings.empty:
             lows_below = swings[(swings["kind"] == "low") & (swings["price"] < price)]
             if not lows_below.empty:
                 protectors.append(float(lows_below.iloc[-1]["price"]))
-        stop = (max(protectors) - buffer) if protectors else price - 1.5 * atr_val
-        stop = min(stop, price - 0.5 * atr_val)  # never inside the noise
-
-        targets = sorted(
-            [p["level"] for p in analysis["pools"] if p["side"] == "buyside" and not p["swept"] and p["level"] > price]
-            + ([float(swings[swings["kind"] == "high"]["price"].max())] if not swings.empty and (swings["kind"] == "high").any() else [])
-        )
-        targets = [t for t in targets if t > price]
-        risk = price - stop
-        target = next((t for t in targets if (t - price) / risk >= MIN_RISK_REWARD), None)
-        if target is None:
-            target = price + 2.0 * risk
+        stop_dist = (price - max(protectors) + buffer) if protectors else 1.5 * atr_val
     else:
         protectors = [ob["high"] for ob in analysis["valid_order_blocks"]
                       if ob["direction"] == "bearish" and ob["high"] > price]
-        protectors += [s["level"] for s in analysis["sweeps"] if s["side"] == "buyside" and s["level"] > price]
+        protectors += [s["level"] for s in analysis["sweeps"]
+                       if s["side"] == "buyside" and s["level"] > price]
         if not swings.empty:
             highs_above = swings[(swings["kind"] == "high") & (swings["price"] > price)]
             if not highs_above.empty:
                 protectors.append(float(highs_above.iloc[-1]["price"]))
-        stop = (min(protectors) + buffer) if protectors else price + 1.5 * atr_val
-        stop = max(stop, price + 0.5 * atr_val)
+        stop_dist = (min(protectors) - price + buffer) if protectors else 1.5 * atr_val
 
-        targets = sorted(
-            [p["level"] for p in analysis["pools"] if p["side"] == "sellside" and not p["swept"] and p["level"] < price]
-            + ([float(swings[swings["kind"] == "low"]["price"].min())] if not swings.empty and (swings["kind"] == "low").any() else []),
-            reverse=True,
-        )
-        targets = [t for t in targets if t < price]
-        risk = stop - price
-        target = next((t for t in targets if (price - t) / risk >= MIN_RISK_REWARD), None)
-        if target is None:
-            target = price - 2.0 * risk
+    stop_dist = max(stop_dist, 0.5 * atr_val)  # never inside the noise
+    stop_basis = "structure"
+    if stop_dist > sl_cap:
+        # structure is unrealistically far — cap at the configured percent
+        stop_dist = max(sl_cap, 0.25 * atr_val)
+        stop_basis = "percent_cap"
+    stop = price - stop_dist if bullish else price + stop_dist
+
+    # --- target: liquidity within reach, else capped risk multiple ------
+    if bullish:
+        candidates = [p["level"] for p in analysis["pools"]
+                      if p["side"] == "buyside" and not p["swept"] and p["level"] > price]
+        if not swings.empty:
+            recent_highs = swings[(swings["kind"] == "high")
+                                  & (swings["pos"] >= n - TARGET_SWING_BARS)
+                                  & (swings["price"] > price)]
+            candidates += [float(x) for x in recent_highs["price"]]
+        candidates = sorted(t for t in candidates if price < t <= price + tp_cap)
+        reward_of = lambda t: t - price  # noqa: E731
+    else:
+        candidates = [p["level"] for p in analysis["pools"]
+                      if p["side"] == "sellside" and not p["swept"] and p["level"] < price]
+        if not swings.empty:
+            recent_lows = swings[(swings["kind"] == "low")
+                                 & (swings["pos"] >= n - TARGET_SWING_BARS)
+                                 & (swings["price"] < price)]
+            candidates += [float(x) for x in recent_lows["price"]]
+        candidates = sorted((t for t in candidates if price - tp_cap <= t < price), reverse=True)
+        reward_of = lambda t: price - t  # noqa: E731
+
+    target = next((t for t in candidates if reward_of(t) / stop_dist >= MIN_RISK_REWARD), None)
+    target_basis = "liquidity"
+    if target is None and candidates:
+        target = candidates[-1]  # best reachable liquidity even if RR < min
+    if target is None:
+        reward = min(2.0 * stop_dist, tp_cap)
+        target = price + reward if bullish else price - reward
+        target_basis = "risk_multiple"
 
     risk = abs(price - stop)
     reward = abs(target - price)
+    pip = 0.01 if symbol.upper().endswith("JPY") else 0.0001
     return {
         "entry": round(price, decimals),
         "stop_loss": round(stop, decimals),
         "take_profit": round(target, decimals),
         "risk_reward": round(reward / risk, 2) if risk > 0 else None,
+        "sl_pips": round(risk / pip, 1),
+        "tp_pips": round(reward / pip, 1),
+        "sl_pct": round(risk / price * 100, 3),
+        "tp_pct": round(reward / price * 100, 3),
+        "stop_basis": stop_basis,
+        "target_basis": target_basis,
     }
 
 
@@ -485,7 +531,12 @@ def decide(
             no_trade_reasons = [v.replace("VETO: ", "") for v in vetoes]
         else:
             action = ACTION_NO_TRADE
-            levels = {"entry": None, "stop_loss": None, "take_profit": None, "risk_reward": None}
+            levels = {
+                "entry": None, "stop_loss": None, "take_profit": None,
+                "risk_reward": None, "sl_pips": None, "tp_pips": None,
+                "sl_pct": None, "tp_pct": None,
+                "stop_basis": None, "target_basis": None,
+            }
             no_trade_reasons = [v.replace("VETO: ", "") for v in vetoes]
             if total == 0:
                 no_trade_reasons.append("No valid confluence signals detected")

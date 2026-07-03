@@ -4,16 +4,41 @@ const SETTING_LABELS = {
   broadcast_signals: "Broadcast signals to Telegram",
   predictions_enabled: "Predictions enabled",
   disabled_pairs: "Disabled pairs",
+  sl_max_pct: "Max stop-loss distance",
+  tp_max_pct: "Max take-profit distance",
 };
+
+const PAIR_LIST_KEYS = new Set(["supported_pairs", "disabled_pairs"]);
+
+export function parsePairList(value) {
+  if (Array.isArray(value)) return value.map((s) => String(s).trim()).filter(Boolean);
+  if (!value) return [];
+  return String(value)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+export function isPairListKey(key) {
+  return PAIR_LIST_KEYS.has(key);
+}
 
 export function formatSettingKey(key) {
   return SETTING_LABELS[key] || key.replace(/_/g, " ");
 }
 
 export function formatSettingValue(key, value) {
+  if (isPairListKey(key)) {
+    const pairs = parsePairList(value);
+    return pairs.length ? `${pairs.length} pairs` : "None";
+  }
   if (key === "min_final_confidence") {
     const n = Number(value);
     return Number.isFinite(n) ? `${(n * 100).toFixed(0)}%` : String(value);
+  }
+  if (key === "sl_max_pct" || key === "tp_max_pct") {
+    const n = Number(value);
+    return Number.isFinite(n) ? `${n}%` : String(value);
   }
   if (key === "broadcast_signals" || key === "predictions_enabled") {
     return value === true || value === "true" ? "Yes" : "No";

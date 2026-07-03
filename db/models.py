@@ -287,6 +287,23 @@ class TrainingRecord(Base):
     prediction = relationship("PredictionReview", back_populates="training_record")
 
 
+class Notification(Base):
+    __tablename__ = 'notifications'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    kind = Column(String(32), nullable=False, index=True)
+    title = Column(String(160), nullable=False)
+    body = Column(Text, nullable=False)
+    link = Column(String(256), nullable=True)
+    meta_json = Column(Text, nullable=True)
+    read = Column(Boolean, default=False, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index('ix_notifications_user_read_created', 'user_id', 'read', 'created_at'),
+    )
+
+
 class AdminLog(Base):
     __tablename__ = 'admin_logs'
     id = Column(Integer, primary_key=True)

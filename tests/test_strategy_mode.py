@@ -57,10 +57,11 @@ def test_collect_votes_respects_strategy_mode():
     ict = _collect_votes(analysis, "ict")
 
     assert len(both) == len(smc) + len(ict)
-    assert all("SMC" in r for _, _, r in smc)
-    assert all("ICT" in r for _, _, r in ict)
-    assert not any("ICT" in r for _, _, r in smc)
-    assert not any("SMC" in r for _, _, r in ict)
+    # votes are (direction, weight, reason, component) 4-tuples
+    assert all("SMC" in r for _, _, r, _ in smc)
+    assert all("ICT" in r for _, _, r, _ in ict)
+    assert not any("ICT" in r for _, _, r, _ in smc)
+    assert not any("SMC" in r for _, _, r, _ in ict)
 
 
 def test_decide_includes_strategy_field():

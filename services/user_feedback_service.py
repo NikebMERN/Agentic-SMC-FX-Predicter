@@ -74,6 +74,22 @@ def submit_feedback(
         msg = "Feedback recorded"
         if record and record.conflict:
             msg = "Feedback recorded — your report differs from market data (flagged for admin review)"
+
+        from db.models import User, MarketVerification
+        from services.notification_service import notify_feedback_submitted
+        user = db.query(User).filter(User.id == user_id).first()
+        mv = db.query(MarketVerification).filter(MarketVerification.prediction_id == prediction_id).first()
+        notify_feedback_submitted(
+            username=user.username if user else f"user#{user_id}",
+            user_id=user_id,
+            prediction_id=prediction_id,
+            symbol=review.symbol,
+            predicted_action=review.predicted_action,
+            user_feedback=fb,
+            market_direction=mv.actual_direction if mv else None,
+            market_outcome=mv.outcome if mv else None,
+            conflict=bool(record and record.conflict),
+        )
         return True, msg, row
     except Exception:
         log.exception("submit_feedback failed")

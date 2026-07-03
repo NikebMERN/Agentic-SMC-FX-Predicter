@@ -176,8 +176,35 @@ export default function PredictPage() {
             </p>
             <p className="text-xs text-slate-500">Horizon: {horizon}</p>
             {d.entry != null && (
-              <p className="text-sm text-slate-400">
-                Entry {d.entry} · Invalidation {d.invalidation_price ?? d.stop_loss} · Target {d.target_liquidity ?? d.take_profit}
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                <div className="rounded border border-slate-700 bg-slate-950 p-3 text-center">
+                  <div className="text-xs uppercase tracking-wide text-slate-500">Entry</div>
+                  <div className="mt-1 text-base font-semibold text-slate-100">{d.entry}</div>
+                </div>
+                <div className="rounded border border-red-900/60 bg-red-950/30 p-3 text-center">
+                  <div className="text-xs uppercase tracking-wide text-red-400">Stop Loss</div>
+                  <div className="mt-1 text-base font-semibold text-red-300">
+                    {d.invalidation_price ?? d.stop_loss}
+                  </div>
+                  {d.sl_pips != null && (
+                    <div className="text-xs text-red-400/80">{d.sl_pips} pips · {d.sl_pct}%</div>
+                  )}
+                </div>
+                <div className="rounded border border-green-900/60 bg-green-950/30 p-3 text-center">
+                  <div className="text-xs uppercase tracking-wide text-green-400">Take Profit</div>
+                  <div className="mt-1 text-base font-semibold text-green-300">
+                    {d.target_liquidity ?? d.take_profit}
+                  </div>
+                  {d.tp_pips != null && (
+                    <div className="text-xs text-green-400/80">{d.tp_pips} pips · {d.tp_pct}%</div>
+                  )}
+                </div>
+              </div>
+            )}
+            {d.risk_reward != null && (
+              <p className="mt-2 text-center text-sm text-slate-400">
+                Risk/Reward <span className="font-semibold text-slate-200">1 : {d.risk_reward}</span>
+                {d.stop_basis === "percent_cap" && " · stop capped at the configured max distance"}
               </p>
             )}
             {Object.keys(scores).length > 0 && (

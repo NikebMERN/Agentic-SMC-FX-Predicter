@@ -561,6 +561,8 @@ def approve_user_route(admin_id, user_id):
         {"signals_remaining": quota},
     )
     log.info("Admin %s approved user %s with quota %s", admin_id, user_id, quota)
+    from services.notification_service import notify_quota_updated
+    notify_quota_updated(user.id, signals_remaining=user.signals_remaining, reason="approved")
     return jsonify({
         "message": f"User {user_id} approved with {quota} predictions",
         "user": {k: v for k, v in _serialize(user).items() if k != "password_hash"},
@@ -856,6 +858,7 @@ def admin_predict(admin_id):
 @admin_bp.route("/admin/api/settings")
 @admin_required
 def get_settings(admin_id):
+    from engine.confluence import SL_MAX_PCT_DEFAULT, TP_MAX_PCT_DEFAULT
     return jsonify({
         "effective": {
             "supported_pairs": settings.get_supported_pairs(),
@@ -863,6 +866,8 @@ def get_settings(admin_id):
             "broadcast_signals": settings.get_broadcast_signals(),
             "predictions_enabled": settings.get("predictions_enabled", "true"),
             "disabled_pairs": settings.get("disabled_pairs", ""),
+            "sl_max_pct": settings.get_float("sl_max_pct", SL_MAX_PCT_DEFAULT),
+            "tp_max_pct": settings.get_float("tp_max_pct", TP_MAX_PCT_DEFAULT),
         },
         "overrides": settings.all_settings(),
     })
@@ -917,6 +922,18 @@ def update_settings(admin_id):
         settings.set("disabled_pairs", ",".join(pairs))
         applied["disabled_pairs"] = pairs
 
+    # Max SL/TP distance as a percent of price — keeps levels realistic.
+    for key, low, high in (("sl_max_pct", 0.05, 2.0), ("tp_max_pct", 0.10, 5.0)):
+        if key in data:
+            try:
+                value = float(data[key])
+            except (TypeError, ValueError):
+                return jsonify({"error": f"{key} must be a number"}), 400
+            if not low <= value <= high:
+                return jsonify({"error": f"{key} must be between {low} and {high} (percent)"}), 400
+            settings.set(key, str(value))
+            applied[key] = value
+
     if not applied:
         return jsonify({"error": "Nothing to update"}), 400
     log.info("Admin %s updated settings: %s", admin_id, applied)
@@ -937,6 +954,8 @@ def set_user_quota(admin_id, user_id):
         db.commit()
         db.refresh(user)
         log_admin_action(admin_id, "set_quota", "user", user_id, {"signals_remaining": user.signals_remaining})
+        from services.notification_service import notify_quota_updated
+        notify_quota_updated(user.id, signals_remaining=user.signals_remaining, reason="updated by admin")
         row = _serialize(user)
         row.pop("password_hash", None)
         return jsonify({
@@ -1205,3 +1224,32 @@ def tail_logs(admin_id):
     with open(LOG_FILE, encoding="utf-8", errors="replace") as f:
         content = f.readlines()
     return jsonify({"lines": [ln.rstrip("\n") for ln in content[-lines:]]})
+
+
+@admin_bp.route("/admin/api/notifications")
+@admin_required
+def list_admin_notifications(admin_id):
+    from services.notification_service import list_notifications, unread_count
+    unread_only = request.args.get("unread") == "1"
+    limit = min(int(request.args.get("limit", 30)), 100)
+    return jsonify({
+        "notifications": list_notifications(admin_id, unread_only=unread_only, limit=limit),
+        "unread_count": unread_count(admin_id),
+    })
+
+
+@admin_bp.route("/admin/api/notifications/<int:notification_id>/read", methods=["PATCH", "POST"])
+@admin_required
+def mark_admin_notification_read(admin_id, notification_id):
+    from services.notification_service import mark_read
+    if not mark_read(notification_id, admin_id):
+        return jsonify({"error": "Notification not found"}), 404
+    return jsonify({"message": "Marked as read"})
+
+
+@admin_bp.route("/admin/api/notifications/read-all", methods=["POST"])
+@admin_required
+def mark_all_admin_notifications_read(admin_id):
+    from services.notification_service import mark_all_read, unread_count
+    updated = mark_all_read(admin_id)
+    return jsonify({"message": f"Marked {updated} as read", "unread_count": unread_count(admin_id)})

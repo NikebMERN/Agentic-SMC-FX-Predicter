@@ -52,6 +52,14 @@ def send_due_feedback_reminders() -> int:
 
             user = db.query(User).filter(User.id == row.user_id).first()
             msg = _feedback_message(row, user)
+            if row.user_id:
+                from services.notification_service import notify_feedback_due
+                notify_feedback_due(
+                    row.user_id,
+                    prediction_id=row.id,
+                    symbol=row.symbol,
+                    predicted_action=row.predicted_action,
+                )
             if row.user_id and notify_user(row.user_id, msg):
                 sent += 1
             row.feedback_reminder_sent = True

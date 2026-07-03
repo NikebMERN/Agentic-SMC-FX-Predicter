@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
+import NotificationBell from "./NotificationBell.jsx";
 
 const NAV = [
   ["dashboard", "Dashboard"],
@@ -53,8 +54,13 @@ export default function Layout() {
           </button>
         </div>
       </aside>
-      <main className="flex-1 overflow-y-auto p-6">
-        <Outlet />
+      <main className="flex flex-1 flex-col overflow-y-auto">
+        <header className="sticky top-0 z-10 flex items-center justify-end gap-3 border-b border-[#30363d] bg-[#0d1117]/95 px-6 py-3 backdrop-blur">
+          <NotificationBell />
+        </header>
+        <div className="flex-1 p-6">
+          <Outlet />
+        </div>
       </main>
     </div>
   );

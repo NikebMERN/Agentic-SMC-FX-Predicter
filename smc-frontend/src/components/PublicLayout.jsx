@@ -1,5 +1,6 @@
 import { Link, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
+import NotificationBell from "./NotificationBell.jsx";
 
 export default function PublicLayout() {
   const { isAuthenticated, profile, logout } = useAuth();
@@ -30,6 +31,7 @@ export default function PublicLayout() {
                     {profile.username} · quota {profile.signals_remaining ?? 0}
                   </span>
                 )}
+                <NotificationBell />
                 <button type="button" onClick={handleLogout} className="text-slate-400 hover:text-white">
                   Log out
                 </button>

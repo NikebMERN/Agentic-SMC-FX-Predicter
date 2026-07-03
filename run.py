@@ -270,8 +270,28 @@ def log_production_warnings() -> None:
     )
 
 
+def _assert_port_free():
+    """Fail fast if another instance already serves the API port.
+
+    On Windows two processes can silently bind the same port, leaving
+    a stale instance answering requests with old code — refuse to start
+    instead."""
+    import socket
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(1.5)
+        if probe.connect_ex(("127.0.0.1", API_PORT)) == 0:
+            raise SystemExit(
+                f"Port {API_PORT} is already serving — another SmartFlow instance "
+                "is running. Stop it first (or change API_PORT)."
+            )
+    finally:
+        probe.close()
+
+
 def serve_api():
     log_production_warnings()
+    _assert_port_free()
     from app import app
     try:
         from waitress import serve

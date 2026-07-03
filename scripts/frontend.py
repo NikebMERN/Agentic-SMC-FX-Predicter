@@ -56,10 +56,10 @@ def build_admin_frontend(force: bool = False) -> bool:
         print("npm not found — install Node.js to build the React admin panel.", file=sys.stderr)
         return False
 
-    print("Building React admin panel…")
+    print("Building React admin panel...")
     subprocess.run([npm, "install"], cwd=ADMIN_FRONTEND, check=True)
     subprocess.run([npm, "run", "build"], cwd=ADMIN_FRONTEND, check=True)
-    print(f"Admin UI built → {ADMIN_DIST}")
+    print(f"Admin UI built -> {ADMIN_DIST}")
     return os.path.isfile(os.path.join(ADMIN_DIST, "index.html"))
 
 
@@ -77,10 +77,10 @@ def build_smc_frontend(force: bool = False) -> bool:
         print("npm not found — install Node.js to build smc-frontend.", file=sys.stderr)
         return False
 
-    print("Building user web app…")
+    print("Building user web app...")
     subprocess.run([npm, "install"], cwd=SMC_FRONTEND, check=True)
     subprocess.run([npm, "run", "build"], cwd=SMC_FRONTEND, check=True)
-    print(f"User app built → {SMC_DIST}")
+    print(f"User app built -> {SMC_DIST}")
     return os.path.isfile(os.path.join(SMC_DIST, "index.html"))
 
 

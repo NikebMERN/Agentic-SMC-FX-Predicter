@@ -125,20 +125,27 @@ def test_telegram_redeem_merges_after_bot_start(client, admin_token):
     assert linked.id == web_user_id
 
 
-def test_pending_user_can_login_and_access_profile(client):
+def test_new_user_is_active_with_trial_quota(client):
+    """Registration policy: new accounts are ACTIVE immediately with the
+    free trial quota (web and Telegram alike)."""
     import uuid
+    from services.user_access import DEFAULT_SIGNALS_QUOTA
     suffix = uuid.uuid4().hex[:8]
-    email = f"pending_{suffix}@test.local"
+    email = f"trial_{suffix}@test.local"
     reg = client.post("/register", json={
-        "username": f"pending_{suffix}", "email": email, "password": "pw12345678",
+        "username": f"trial_{suffix}", "email": email, "password": "pw12345678",
     })
     assert reg.status_code == 201
+    body = reg.get_json()
+    assert body["status"] == "active"
+    assert body["signals_remaining"] == DEFAULT_SIGNALS_QUOTA
+    assert str(DEFAULT_SIGNALS_QUOTA) in body["message"]
+
     login = client.post("/login", json={"email": email, "password": "pw12345678"})
     assert login.status_code == 200
-    assert login.get_json()["status"] == "pending"
+    assert login.get_json()["status"] == "active"
     token = login.get_json()["token"]
     me = client.get("/me", headers=auth(token))
     assert me.status_code == 200
-    assert me.get_json()["status"] == "pending"
-    analyze = client.post("/analyze", headers=auth(token), json={"symbol": "EURUSD", "fetch": False})
-    assert analyze.status_code == 403
+    assert me.get_json()["status"] == "active"
+    assert me.get_json()["signals_remaining"] == DEFAULT_SIGNALS_QUOTA

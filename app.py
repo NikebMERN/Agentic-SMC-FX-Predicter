@@ -94,7 +94,10 @@ def register():
     if not user:
         return jsonify({"error": "Username or email already exists"}), 400
     return jsonify({
-        "message": "Registration complete — you have 5 free trial predictions (web + Telegram when linked).",
+        "message": (
+            f"Registration complete — you have {DEFAULT_SIGNALS_QUOTA} free trial "
+            "predictions (web + Telegram when linked)."
+        ),
         "status": "active",
         "signals_remaining": DEFAULT_SIGNALS_QUOTA,
         "user_id": user.id,
@@ -487,6 +490,56 @@ def my_review_candles(user_id, review_id):
     if not data:
         return jsonify({"error": "Review not found"}), 404
     return jsonify(data)
+
+
+@app.route("/notifications", methods=["GET"])
+@token_required
+def list_user_notifications(user_id):
+    from services.notification_service import list_notifications, unread_count
+    unread_only = request.args.get("unread") == "1"
+    limit = min(int(request.args.get("limit", 30)), 100)
+    return jsonify({
+        "notifications": list_notifications(user_id, unread_only=unread_only, limit=limit),
+        "unread_count": unread_count(user_id),
+    })
+
+
+@app.route("/notifications/<int:notification_id>/read", methods=["PATCH", "POST"])
+@token_required
+def mark_user_notification_read(user_id, notification_id):
+    from services.notification_service import mark_read
+    if not mark_read(notification_id, user_id):
+        return jsonify({"error": "Notification not found"}), 404
+    return jsonify({"message": "Marked as read"})
+
+
+@app.route("/notifications/read-all", methods=["POST"])
+@token_required
+def mark_all_user_notifications_read(user_id):
+    from services.notification_service import mark_all_read, unread_count
+    updated = mark_all_read(user_id)
+    return jsonify({"message": f"Marked {updated} as read", "unread_count": unread_count(user_id)})
+
+
+@app.route("/my/quota-request", methods=["POST"])
+@token_required
+def request_quota(user_id):
+    from services.notification_service import notify_quota_request, recent_quota_request_exists
+    from services.user_access import get_user
+    user = get_user(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    if recent_quota_request_exists(user_id):
+        return jsonify({"error": "You already have a pending quota request. An admin will review it soon."}), 409
+    data = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip() or None
+    notify_quota_request(
+        user_id,
+        username=user.username,
+        message=message,
+        signals_remaining=user.signals_remaining,
+    )
+    return jsonify({"message": "Quota request sent to admin."})
 
 
 @app.route("/")
