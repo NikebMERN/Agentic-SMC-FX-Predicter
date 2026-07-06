@@ -15,6 +15,7 @@ from engine.data import get_data
 from services.training_service import reconcile_training_record
 from services.user_access import FEEDBACK_DUE_HOURS
 from utils import settings
+from utils.config import INTERVAL as DEFAULT_INTERVAL
 from utils.logger import get_logger
 
 log = get_logger("services.prediction_review")
@@ -41,8 +42,8 @@ def parse_horizon(raw: str | None) -> tuple[str, int]:
     return key, HORIZON_HOURS[key]
 
 
-def _atr_fraction_threshold(entry: float, atr: float) -> float:
-    frac = settings.get_float("verification_atr_fraction", 0.25)
+def _atr_fraction_threshold(entry: float, atr: float, *, sideways_atr_multiplier: float | None = None) -> float:
+    frac = sideways_atr_multiplier if sideways_atr_multiplier is not None else settings.get_float("verification_atr_fraction", 0.25)
     if entry <= 0:
         return 0.0005
     return (frac * atr) / entry
@@ -64,12 +65,13 @@ def verify_candles(
     target: float | None,
     predicted_action: str,
     atr: float,
+    sideways_atr_multiplier: float | None = None,
 ) -> dict:
     """Candle-based MFE/MAE with invalidation-first logic."""
     if candles.empty or entry <= 0:
         raise ValueError("Insufficient candle data for verification")
 
-    threshold = _atr_fraction_threshold(entry, atr)
+    threshold = _atr_fraction_threshold(entry, atr, sideways_atr_multiplier=sideways_atr_multiplier)
     mfe = 0.0
     mae = 0.0
     invalidation_hit = False
@@ -110,7 +112,10 @@ def verify_candles(
 
     end_price = float(candles["Close"].iloc[-1])
     change = (end_price - entry) / entry
-    actual_direction = _direction_from_change(change, threshold)
+    if invalidation_hit and (is_bull or is_bear):
+        actual_direction = "INVALIDATED"
+    else:
+        actual_direction = _direction_from_change(change, threshold)
 
     if predicted_action in NON_TRADE_ACTIONS:
         outcome = "NO_TRADE_CONFIRMED" if actual_direction == "SIDEWAYS" else "NEUTRAL"
@@ -211,15 +216,24 @@ def create_review(
     signals: list[dict] | None = None,
     strategy_mode: str = "both",
     model_version: str | None = None,
+    model_version_id: int | None = None,
+    meta_ml_probability: float | None = None,
+    confidence_before_ml: float | None = None,
+    final_confidence: float | None = None,
+    trading_style: str = "intraday",
+    rule_engine_version: str | None = None,
+    feature_schema_version: str | None = None,
+    threshold_version_id: int | None = None,
     snapshot_df: pd.DataFrame | None = None,
     snapshot_records: list[dict] | None = None,
     source: str = "web",
 ) -> PredictionReview | None:
     db = SessionLocal()
     try:
-        horizon_key, _hours = parse_horizon(horizon)
+        horizon_key, horizon_hours = parse_horizon(horizon)
         now = datetime.utcnow()
         due = now + timedelta(hours=FEEDBACK_DUE_HOURS)
+        evaluate_at = now + timedelta(hours=horizon_hours)
         entry = float(entry_price or 0)
         if entry <= 0 and predicted_action not in NON_TRADE_ACTIONS:
             entry = 0.0
@@ -240,10 +254,18 @@ def create_review(
             signals_json=json.dumps(signals or []),
             strategy_mode=strategy_mode,
             model_version=model_version,
+            model_version_id=model_version_id,
+            threshold_version_id=threshold_version_id,
+            meta_ml_probability=meta_ml_probability,
+            confidence_before_ml=confidence_before_ml,
+            final_confidence=final_confidence,
+            trading_style=trading_style,
+            rule_engine_version=rule_engine_version or "v1",
+            feature_schema_version=feature_schema_version or "v1",
             predicted_at=now,
             feedback_due_at=due,
             feedback_reminder_sent=False,
-            evaluate_at=due,
+            evaluate_at=evaluate_at,
             features_json=json.dumps(features or {}),
             status="pending",
         )
@@ -297,12 +319,18 @@ def verify_single_review(review_id: int) -> bool:
             return False
 
         try:
+            horizon_key, horizon_hours = parse_horizon(row.horizon)
             df, _ = get_data(row.symbol, row.interval, fetch=True)
             predicted_at = row.predicted_at or datetime.utcnow()
-            window = df[df.index >= pd.Timestamp(predicted_at)]
+            horizon_end = predicted_at + timedelta(hours=horizon_hours)
+            window = df[(df.index >= pd.Timestamp(predicted_at)) & (df.index <= pd.Timestamp(horizon_end))]
             if window.empty:
-                window = df.tail(max(10, FEEDBACK_DUE_HOURS * 4))
+                window = df[df.index >= pd.Timestamp(predicted_at)]
+            if window.empty:
+                window = df.tail(max(10, horizon_hours * 4))
             atr = float((window["High"] - window["Low"]).mean()) if len(window) else 0.001
+            from services.threshold_service import resolve_thresholds_model
+            v_thresholds = resolve_thresholds_model(row.symbol, row.interval, row.horizon or "intraday")
             result = verify_candles(
                 window,
                 entry=row.entry_price or float(window["Close"].iloc[0]),
@@ -310,6 +338,7 @@ def verify_single_review(review_id: int) -> bool:
                 target=row.target_price,
                 predicted_action=row.predicted_action,
                 atr=atr,
+                sideways_atr_multiplier=v_thresholds.verification.sideways_threshold_atr_multiplier,
             )
         except Exception as exc:
             row.retry_count = (row.retry_count or 0) + 1
@@ -380,6 +409,10 @@ def list_reviews(
     status: str | None = None,
     user_id: int | None = None,
     limit: int = 100,
+    *,
+    symbol: str | None = None,
+    conflicts_only: bool = False,
+    correct_only: bool = False,
 ) -> list[dict]:
     db = SessionLocal()
     try:
@@ -388,7 +421,9 @@ def list_reviews(
             q = q.filter(PredictionReview.status == status)
         if user_id is not None:
             q = q.filter(PredictionReview.user_id == user_id)
-        rows = q.limit(limit).all()
+        if symbol:
+            q = q.filter(PredictionReview.symbol == symbol.upper())
+        rows = q.limit(limit * 3 if conflicts_only or correct_only else limit).all()
         out = []
         for r in rows:
             scores = json.loads(r.scores_json) if r.scores_json else {}
@@ -398,12 +433,17 @@ def list_reviews(
             feedback_due = r.feedback_due_at or r.evaluate_at
             feedback_open = feedback_due and feedback_due <= now and not uf
             tr = r.training_record
+            conflict = tr.conflict if tr else False
+            if conflicts_only and not conflict:
+                continue
+            if correct_only and r.was_correct is not True:
+                continue
             out.append({
                 "id": r.id,
                 "signal_id": r.signal_id,
                 "user_id": r.user_id,
                 "symbol": r.symbol,
-                "interval": r.interval,
+                "interval": r.interval or DEFAULT_INTERVAL,
                 "horizon": r.horizon,
                 "predicted_action": r.predicted_action,
                 "direction": r.direction,
@@ -430,11 +470,101 @@ def list_reviews(
                     "invalidation_hit": mv.invalidation_hit,
                 } if mv else None,
                 "user_truthful": (not tr.conflict) if tr and uf and mv else None,
-                "conflict": tr.conflict if tr else False,
+                "conflict": conflict,
+                "training_ready": bool(tr and tr.admin_status == "APPROVED" and not tr.conflict),
             })
+            if len(out) >= limit:
+                break
         return out
     finally:
         db.close()
+
+
+def bulk_retrain_reviews(
+    *,
+    review_ids: list[int] | None = None,
+    use_all: bool = False,
+    status: str | None = "evaluated",
+    symbol: str | None = None,
+    conflicts_only: bool = False,
+    correct_only: bool = False,
+    promote: bool = True,
+) -> dict:
+    """Retrain once per symbol for selected reviews, then mark them done."""
+    from engine.data import get_data
+    from engine.model_trainer import retrain_with_feedback
+    from utils.config import INTERVAL
+
+    if use_all:
+        reviews_data = list_reviews(
+            status=status,
+            symbol=symbol,
+            conflicts_only=conflicts_only,
+            correct_only=correct_only,
+            limit=500,
+        )
+        ids = [r["id"] for r in reviews_data]
+    elif review_ids:
+        ids = list(review_ids)
+    else:
+        return {"error": "Provide review_ids or use_all=true"}
+
+    if not ids:
+        return {"error": "No reviews matched your filters"}
+
+    db = SessionLocal()
+    try:
+        rows = db.query(PredictionReview).filter(PredictionReview.id.in_(ids)).all()
+        row_by_id = {r.id: r for r in rows}
+    finally:
+        db.close()
+
+    by_symbol: dict[str, list[int]] = {}
+    for rid in ids:
+        row = row_by_id.get(rid)
+        if not row:
+            continue
+        sym = row.symbol.upper()
+        by_symbol.setdefault(sym, []).append(rid)
+
+    symbol_results = []
+    errors = []
+    for sym, sym_ids in by_symbol.items():
+        interval = DEFAULT_INTERVAL
+        for rid in sym_ids:
+            row = row_by_id.get(rid)
+            if row and row.interval:
+                interval = row.interval
+                break
+        try:
+            df, source = get_data(sym, interval or INTERVAL, fetch=True)
+            result = retrain_with_feedback(sym, df, interval or INTERVAL, promote=promote)
+            if result is None:
+                errors.append(f"{sym}: not enough data")
+                continue
+            for rid in sym_ids:
+                set_review_status(rid, "retrain_done")
+            symbol_results.append({
+                "symbol": sym,
+                "review_ids": sym_ids,
+                "count": len(sym_ids),
+                "promoted": result.get("promoted", False),
+                "metrics": result.get("metrics"),
+                "data_source": source,
+            })
+        except Exception as exc:
+            log.exception("Bulk retrain failed for %s", sym)
+            errors.append(f"{sym}: {exc}")
+
+    if not symbol_results:
+        return {"error": "; ".join(errors) or "Retrain failed"}
+
+    return {
+        "message": f"Retrained {len(symbol_results)} symbol(s) from {len(ids)} review(s)",
+        "reviews_processed": len(ids),
+        "symbols": symbol_results,
+        "errors": errors,
+    }
 
 
 def set_review_status(review_id: int, status: str) -> bool:

@@ -19,3 +19,7 @@ Werkzeug==3.1.0
 APScheduler==3.10.4
 alembic==1.14.0
 redis==5.2.1
+pydantic==2.10.6
+flask-sock==0.7.0
+lightgbm==4.5.0
+xgboost==2.1.3

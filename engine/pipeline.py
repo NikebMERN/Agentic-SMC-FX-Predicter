@@ -24,7 +24,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from engine import confluence
 from engine.data import get_data, normalize_symbol, htf_interval
-from engine.model_trainer import train_and_predict
 from engine.signals_export import export_signals
 from utils.config import INTERVAL
 from utils.logger import get_logger
@@ -84,14 +83,28 @@ def predict_symbol(
     fetch: bool = True,
     strategy_mode: str = "both",
     on_progress: ProgressFn | None = None,
+    mtf: bool | None = None,
+    trading_style: str = "intraday",
 ) -> dict:
-    """Full fetch -> analyze -> train -> decide cycle for one pair."""
+    """Full fetch -> analyze -> train -> decide cycle for one pair.
+
+    Default mode is the liquidity-first multi-timeframe stack driven by
+    trading_style (scalping / intraday / swing).
+    Passing an explicit non-default interval (or mtf=False) runs the
+    single-timeframe analysis on that interval instead.
+    """
+    from engine.trading_style import normalize_trading_style, primary_entry_tf
+
     symbol = normalize_symbol(symbol)
-    interval = interval or INTERVAL
     from engine.confluence import normalize_strategy_mode
     strategy_mode = normalize_strategy_mode(strategy_mode)
-    with _lock_for(f"{symbol}_{interval}"):
-        return _predict_locked(symbol, interval, fetch, strategy_mode, on_progress)
+    style = normalize_trading_style(trading_style)
+    if mtf is None:
+        mtf = interval in (None, "", "30min", primary_entry_tf(style))
+    interval = interval or primary_entry_tf(style)
+    lock_key = f"{symbol}_mtf_{style}" if mtf else f"{symbol}_{interval}"
+    with _lock_for(lock_key):
+        return _predict_locked(symbol, interval, fetch, strategy_mode, on_progress, mtf, style)
 
 
 def _predict_locked(
@@ -100,6 +113,8 @@ def _predict_locked(
     fetch: bool,
     strategy_mode: str,
     on_progress: ProgressFn | None,
+    mtf: bool,
+    trading_style: str = "intraday",
 ) -> dict:
 
     def progress(stage: str, message: str):
@@ -107,36 +122,106 @@ def _predict_locked(
         if on_progress:
             on_progress(stage, message)
 
-    progress("fetch", f"Pulling latest {interval} data for {symbol}...")
-    df, source = get_data(symbol, interval, fetch=fetch)
-    progress("data", f"{len(df)} candles loaded (source: {source}, last candle: {df.index[-1]})")
+    from engine.candle_validator import validate_candles
+    from engine.prediction_response import build_prediction_response
+    from engine.trading_style import normalize_trading_style, timeframe_labels
+    from services.threshold_service import resolve_thresholds
 
-    progress("analyze", f"Detecting valid signals ({strategy_mode}: SMC/ICT) on {symbol}...")
-    analysis = confluence.analyze(df, symbol)
-    htf_bias = _compute_htf_bias(symbol, interval, fetch)
-    if htf_bias:
-        analysis["htf_bias"] = htf_bias
-        progress("analyze", f"HTF bias: {htf_bias['direction']} ({htf_bias['interval']})")
+    style = normalize_trading_style(trading_style)
+    thresholds, threshold_version_id = resolve_thresholds(symbol, interval, style)
+    mtf_context = None
+    validation = None
+    spread_ok = True
+    data_valid = True
 
-    progress("train", "Training the model on this pair's latest data...")
-    ml_signal = None
-    try:
-        ml_signal = train_and_predict(symbol, df, interval)
-        if ml_signal:
-            progress(
-                "train",
-                f"Model trained ({ml_signal['metrics']['samples']} samples, "
-                f"validation accuracy {ml_signal['metrics']['val_accuracy']:.1%})",
-            )
-        else:
-            progress("train", "Not enough data for an honest model - using rule confluence only")
-    except Exception as exc:
-        log.exception("ML training failed for %s", symbol)
-        progress("train", f"Model training failed ({exc}) - using rule confluence only")
+    if mtf:
+        from engine.topdown import topdown_analyze
+        progress("fetch", f"Top-down analysis for {symbol} ({style}): {' -> '.join(timeframe_labels(style))}...")
+        stack = topdown_analyze(symbol, fetch, trading_style=style, progress=progress)
+        analysis = stack["analysis"]
+        df = stack["entry_df"]
+        source = stack["source"]
+        interval = stack["entry_tf"]
+        mtf_context = stack["context"]
+        thresholds = stack.get("thresholds", thresholds)
+        threshold_version_id = stack.get("threshold_version_id", threshold_version_id)
+        progress("data", f"{len(df)} entry candles ({interval}, source: {source}, last: {df.index[-1]})")
+    else:
+        progress("fetch", f"Pulling latest {interval} data for {symbol}...")
+        df, source = get_data(symbol, interval, fetch=fetch)
+        progress("data", f"{len(df)} candles loaded (source: {source}, last candle: {df.index[-1]})")
+
+        progress("analyze", f"Detecting valid signals ({strategy_mode}: SMC/ICT) on {symbol}...")
+        analysis = confluence.analyze(df, symbol, interval=interval, thresholds=thresholds, trading_style=style)
+        analysis["threshold_version_id"] = threshold_version_id
+        htf_bias = _compute_htf_bias(symbol, interval, fetch)
+        if htf_bias:
+            analysis["htf_bias"] = htf_bias
+            analysis["higher_timeframe_bias"] = htf_bias.get("direction", "neutral").upper()
+            progress("analyze", f"HTF bias: {htf_bias['direction']} ({htf_bias['interval']})")
+        analysis["trading_style"] = style
+
+    validation = validate_candles(df, symbol, interval, thresholds=thresholds, trading_style=style)
+    data_valid = validation["valid"]
+    if validation["warnings"]:
+        progress("data", "; ".join(validation["warnings"][:2]))
+    if not data_valid:
+        progress("data", f"Data validation: {'; '.join(validation['errors'][:2])}")
+
+    # ml_mode: "active" uses promoted meta-model (default); "fresh" is deprecated.
+    from utils import settings as runtime_settings
+    ml_mode = (runtime_settings.get("ml_mode", "active") or "active").lower()
 
     progress("decide", f"Aggregating confluence ({strategy_mode}) into a decision...")
-    decision = confluence.decide(analysis, ml_signal, strategy_mode=strategy_mode)
+    decision = confluence.decide(
+        analysis, None, strategy_mode=strategy_mode,
+        spread_ok=spread_ok, data_valid=data_valid, thresholds=thresholds,
+    )
+
+    from ml.feature_schema import build_meta_features, RULE_ENGINE_VERSION
+    from schemas.meta_feature_schema import FEATURE_SCHEMA_VERSION
+    meta_features = build_meta_features(
+        analysis, decision,
+        spread_ok=spread_ok, data_valid=data_valid,
+        threshold_version_id=threshold_version_id,
+    )
+    meta_snapshot = meta_features.model_dump()
+
+    ml_probability = None
+    model_version_id = None
+    has_active_model = False
+    if ml_mode == "active":
+        from services.ml_service import predict_meta_quality
+        ml_probability, model_version_id = predict_meta_quality(
+            meta_features, symbol, interval, style,
+        )
+        has_active_model = model_version_id is not None
+        if has_active_model and ml_probability is not None:
+            progress(
+                "ml_gate",
+                f"Meta-model P(win)={ml_probability:.2f} (version {model_version_id})",
+            )
+        else:
+            progress("ml_gate", "No active meta-model — rule-only with confidence cap")
+    elif ml_mode == "fresh":
+        progress("ml_gate", "Legacy fresh-training mode deprecated — using active meta-model path")
+        from services.ml_service import predict_meta_quality
+        ml_probability, model_version_id = predict_meta_quality(
+            meta_features, symbol, interval, style,
+        )
+        has_active_model = model_version_id is not None
+
+    from engine.ml_gate import apply_ml_gate
+    decision = apply_ml_gate(
+        decision,
+        ml_probability=ml_probability,
+        has_active_model=has_active_model,
+    )
     structured_signals = export_signals(analysis, interval=interval)
+    prediction = build_prediction_response(
+        symbol, style, decision, analysis,
+        mtf_context=mtf_context, validation=validation,
+    )
 
     from engine.features import build_features
     feat_df = build_features(df)
@@ -157,10 +242,27 @@ def _predict_locked(
             "volume": float(row.get("Volume", 0)),
         })
 
+    # Automated pip / position calculator (default account assumptions;
+    # clients recalculate live via POST /calculator).
+    calculator = None
+    if decision.get("entry") and decision.get("stop_loss") and decision.get("take_profit"):
+        try:
+            from engine.risk_calc import pip_calculator
+            calculator = pip_calculator(
+                symbol, decision["entry"], decision["stop_loss"], decision["take_profit"],
+            )
+        except Exception as exc:
+            log.warning("pip calculator failed for %s: %s", symbol, exc)
+
     result = {
         "symbol": symbol,
         "interval": interval,
+        "trading_style": style,
         "strategy": strategy_mode,
+        "mtf": mtf_context,
+        "prediction": prediction,
+        "validation": validation,
+        "calculator": calculator,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "data_source": source,
         "last_candle": str(analysis["last_time"]),
@@ -169,7 +271,16 @@ def _predict_locked(
         "structured_signals": structured_signals,
         "candle_snapshot": candle_snapshot,
         "feature_snapshot": feature_snapshot,
-        "ml": ml_signal["metrics"] if ml_signal else None,
+        "meta_feature_snapshot": meta_snapshot,
+        "ml": {
+            "mode": ml_mode,
+            "meta_ml_probability": ml_probability,
+            "model_version_id": model_version_id,
+            "has_active_model": has_active_model,
+            "rule_engine_version": RULE_ENGINE_VERSION,
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        },
+        "threshold_version_id": threshold_version_id,
         "analysis_summary": {
             "structure_events": len(analysis["structure"]["events"]),
             "trend": analysis["structure"]["trend"],
@@ -194,13 +305,41 @@ def format_result_text(result: dict, markdown: bool = False) -> str:
     b = "*" if markdown else ""
     lines = [
         f"{b}{result['symbol']} - {d['action']}{b}",
+    ]
+    mtf_ctx = result.get("mtf")
+    if mtf_ctx:
+        tfs = mtf_ctx.get("timeframes", {})
+        style_label = mtf_ctx.get("trading_style", "intraday")
+        used = mtf_ctx.get("timeframes_used") or []
+        if used:
+            lines.append(f"Trading style: {style_label} ({' -> '.join(used)})")
+        else:
+            lines.append(
+                f"Timeframes: {tfs.get('parent', ['4H'])} bias -> "
+                f"{tfs.get('structure', ['1H'])} structure -> {tfs.get('entry', '30min')} entry"
+            )
+        liq = mtf_ctx.get("h1_liquidity") or {}
+        if liq:
+            lines.append(
+                f"1H liquidity: {len(liq.get('above', []))} pool(s) above, "
+                f"{len(liq.get('below', []))} below"
+            )
+        if mtf_ctx.get("liquidity_draw"):
+            draw = mtf_ctx["liquidity_draw"]
+            lines.append(f"Draw on liquidity: {draw['level']} ({draw['pips_away']} pips away)")
+    lines += [
         f"Strategy: {d.get('strategy', result.get('strategy', 'both'))}",
         f"Confidence: {d['confidence']:.0%} (rules {d['rule_confidence']:.0%}"
         + (f", ML {d['ml_confidence']:.0%})" if d.get("ml_confidence") is not None else ")"),
         f"Scores: bullish {d['scores']['bullish']} vs bearish {d['scores']['bearish']} "
         f"({d['confluences']} valid confluences)",
     ]
-    if confluence.is_trade_action(d["action"]):
+    has_levels = d.get("entry") is not None and d.get("stop_loss") is not None
+    if d["action"] == confluence.ACTION_WAIT:
+        lines.append("Setup forming — wait for confirmation before acting.")
+        if has_levels:
+            lines.append("Levels below apply once the setup confirms:")
+    if has_levels and (confluence.is_trade_action(d["action"]) or d["action"] == confluence.ACTION_WAIT):
         sl_extra = (
             f" ({d['sl_pips']} pips / {d['sl_pct']}%)"
             if d.get("sl_pips") is not None else ""
@@ -215,10 +354,17 @@ def format_result_text(result: dict, markdown: bool = False) -> str:
             f"Take Profit: {d.get('target_liquidity') or d.get('take_profit')}{tp_extra}",
             f"Risk/Reward: {d['risk_reward']}",
         ]
-    elif d["action"] == confluence.ACTION_WAIT:
-        lines.append("Setup forming — wait for confirmation before acting.")
-        if d.get("invalidation_price"):
-            lines.append(f"Watch invalidation: {d['invalidation_price']}")
+        calc = result.get("calculator")
+        if calc:
+            approx = " (approx.)" if calc.get("approximate") else ""
+            lines += [
+                "",
+                f"{b}Position calculator{b} (balance ${calc['balance']:g}, risk {calc['risk_pct']:g}%):",
+                f"- Lot size: {calc['lot_size']} (risk ${calc['risk_amount']}, reward ${calc['reward_amount']}){approx}",
+                f"- Pip value/lot: ${calc['pip_value_per_lot_usd']} | SL {calc['sl_pips']} pips | TP {calc['tp_pips']} pips",
+            ]
+            if calc.get("warning"):
+                lines.append(f"- WARNING: {calc['warning']}")
     if d.get("killzone"):
         lines.append(f"Kill zone: {d['killzone']}")
     lines.append("")
@@ -228,10 +374,16 @@ def format_result_text(result: dict, markdown: bool = False) -> str:
         lines.append(f"{b}Vetoes:{b}")
         lines += [f"- {v}" for v in d["vetoes"]]
     if result.get("ml"):
-        lines.append(
-            f"Model: {result['ml']['samples']} samples, "
-            f"val accuracy {result['ml']['val_accuracy']:.1%}"
-        )
+        ml = result["ml"]
+        if isinstance(ml, dict) and "samples" in ml:
+            lines.append(
+                f"Model: {ml['samples']} samples, "
+                f"val accuracy {ml.get('val_accuracy', 0):.1%}"
+            )
+        elif isinstance(ml, dict) and ml.get("meta_ml_probability") is not None:
+            lines.append(f"Meta-ML P(win): {ml['meta_ml_probability']:.0%}")
+        elif isinstance(ml, dict) and not ml.get("has_active_model"):
+            lines.append("Meta-model: rule-only (no active version)")
     lines.append(
         f"Data: {result['candles']} candles ({result['data_source']}), last {result['last_candle']}"
     )

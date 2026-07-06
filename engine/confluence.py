@@ -31,7 +31,8 @@ ZONE_BUFFER_ATR = 0.5    # "near a zone" tolerance in ATRs
 W_CHOCH = 2.5
 W_BOS = 2.0
 W_STRUCT_STALE = 1.0
-W_SWEEP = 2.0
+W_SWEEP = 2.5           # liquidity-first: sweeps outrank most signals
+W_LIQUIDITY_DRAW = 2.5  # 1H external liquidity pool in the bias direction
 W_OB_FRESH = 1.5
 W_OB_MITIGATED = 0.75
 W_FVG_OPEN = 1.0
@@ -50,6 +51,7 @@ MIN_RISK_REWARD = 1.5
 # settings table: sl_max_pct / tp_max_pct). 0.40% ~= 40 pips on EURUSD.
 SL_MAX_PCT_DEFAULT = 0.40
 TP_MAX_PCT_DEFAULT = 0.80
+SL_MIN_PIPS_DEFAULT = 5.0  # never tighter than spread + execution noise
 TARGET_SWING_BARS = 60  # TP swing candidates come from recent structure only
 MIN_FINAL_CONFIDENCE = 0.55  # blended confidence floor for a trade
 
@@ -102,29 +104,71 @@ def normalize_strategy_mode(raw) -> str:
     return mode
 
 
-def analyze(df, symbol: str, swing_window: int = 3) -> dict:
+def analyze(
+    df,
+    symbol: str,
+    swing_window: int = 3,
+    interval: str = "60min",
+    *,
+    thresholds=None,
+    trading_style: str = "intraday",
+) -> dict:
     """Run all SMC + ICT detectors over the (tail of the) history."""
+    from engine.risk_calc import pip_size_for
+    from schemas.threshold_schema import SmcIctThresholds, min_bos_break_pips, min_fvg_size_pips
+    from services.threshold_service import resolve_thresholds_model
+
+    if thresholds is None:
+        thresholds = resolve_thresholds_model(symbol, interval, trading_style)
+    elif not isinstance(thresholds, SmcIctThresholds):
+        from schemas.threshold_schema import validate_threshold_config
+        thresholds = validate_threshold_config(thresholds)
+
+    pip = pip_size_for(symbol)
+    min_bos = min_bos_break_pips(thresholds, interval) * pip
+    min_fvg = min_fvg_size_pips(thresholds, interval) * pip
+    disp_mult = thresholds.volatility.displacement_atr_multiplier
+    eq_tol = thresholds.swing.equal_high_low_tolerance_pips * pip
+    swing_window = thresholds.swing.swing_lookback_left
+
     df = df.tail(MAX_BARS)
     atr_series = smc.atr(df)
     atr_last = float(atr_series.iloc[-1])
     price = float(df["Close"].iloc[-1])
 
     swings = smc.find_swings(df, swing_window)
-    structure = smc.detect_structure(df, swings, swing_window, atr_series)
-    order_blocks = smc.detect_order_blocks(df, structure["events"])
-    fvgs = smc.detect_fvg(df, atr_series)
-    pools = smc.detect_liquidity_pools(df, swings, tolerance=0.25 * atr_last)
-    sweeps = ict.detect_sweeps(
-        df, pools, swings, recent_bars=SWEEP_RECENT_BARS, tolerance=0.25 * atr_last
+    structure = smc.detect_structure(
+        df, swings, swing_window, atr_series,
+        displacement_mult=disp_mult,
+        min_break_abs=min_bos,
     )
+    mss_events = smc.detect_mss(structure["events"], [])
+    order_blocks = smc.detect_order_blocks(df, structure["events"])
+    fvgs_raw = smc.detect_fvg(df, atr_series, displacement_mult=disp_mult)
+    fvgs = [
+        g for g in fvgs_raw
+        if (g["high"] - g["low"]) >= min_fvg
+    ]
+    pools = smc.detect_liquidity_pools(df, swings, tolerance=max(eq_tol, 0.25 * atr_last))
+    sweeps = ict.detect_sweeps(
+        df, pools, swings, recent_bars=SWEEP_RECENT_BARS, tolerance=max(eq_tol, 0.25 * atr_last)
+    )
+    mss_events = smc.detect_mss(structure["events"], sweeps)
+    if mss_events:
+        structure["events"] = structure["events"] + [
+            e for e in mss_events if e not in structure["events"]
+        ]
+        structure["events"].sort(key=lambda x: x["pos"])
     rng = ict.dealing_range(df, structure["events"])
     pd_info = ict.premium_discount(price, rng)
     ote = ict.ote_zone(rng)
     breakers = ict.detect_breakers(df, order_blocks, sweeps)
     killzone = ict.active_killzone(df.index[-1])
+    session = ict.session_info(df.index[-1])
 
     return {
         "symbol": symbol,
+        "interval": interval,
         "bars": len(df),
         "last_time": df.index[-1],
         "price": price,
@@ -137,11 +181,15 @@ def analyze(df, symbol: str, swing_window: int = 3) -> dict:
         "fvgs": fvgs,
         "pools": pools,
         "sweeps": sweeps,
+        "mss_events": mss_events,
         "dealing_range": rng,
         "premium_discount": pd_info,
         "ote": ote,
         "breakers": breakers,
         "killzone": killzone,
+        "session": session,
+        "pdh_pdl": ict.pdh_pdl(df),
+        "pwh_pwl": ict.pwh_pwl(df),
     }
 
 
@@ -163,6 +211,15 @@ def _collect_votes(analysis: dict, strategy_mode: str = "both") -> list[tuple[st
             htf["direction"], strength,
             htf.get("reason", "Higher timeframe structure bias"),
             "htf_bias",
+        ))
+
+    # --- ICT: draw on liquidity (1H external liquidity map) -------------
+    draw = analysis.get("liquidity_draw") or {}
+    if use_ict and draw.get("direction") in ("bullish", "bearish"):
+        votes.append((
+            draw["direction"], W_LIQUIDITY_DRAW,
+            f"ICT {draw.get('reason', 'unswept external liquidity in the bias direction')}",
+            "liquidity_draw",
         ))
 
     # --- SMC: market structure bias -----------------------------------
@@ -235,8 +292,8 @@ def _collect_votes(analysis: dict, strategy_mode: str = "both") -> list[tuple[st
         ))
 
     # --- ICT: OTE retracement ------------------------------------------
-    ote = analysis["ote"]
-    if use_ict and ict.price_in_zone(price, ote):
+    ote = analysis.get("ote")
+    if use_ict and ote and ict.price_in_zone(price, ote):
         votes.append((
             ote["direction"], W_OTE,
             f"ICT OTE: price inside 61.8-79% retracement "
@@ -370,11 +427,13 @@ def _stop_and_target(analysis: dict, direction: str, decimals: int) -> dict:
                 protectors.append(float(highs_above.iloc[-1]["price"]))
         stop_dist = (min(protectors) - price + buffer) if protectors else 1.5 * atr_val
 
-    stop_dist = max(stop_dist, 0.5 * atr_val)  # never inside the noise
+    pip = 0.01 if symbol.upper().endswith("JPY") else 0.0001
+    min_pips = settings.get_float("sl_min_pips", SL_MIN_PIPS_DEFAULT)
+    stop_dist = max(stop_dist, 0.5 * atr_val, min_pips * pip)  # never inside noise/spread
     stop_basis = "structure"
     if stop_dist > sl_cap:
         # structure is unrealistically far — cap at the configured percent
-        stop_dist = max(sl_cap, 0.25 * atr_val)
+        stop_dist = max(sl_cap, 0.25 * atr_val, min_pips * pip)
         stop_basis = "percent_cap"
     stop = price - stop_dist if bullish else price + stop_dist
 
@@ -411,7 +470,6 @@ def _stop_and_target(analysis: dict, direction: str, decimals: int) -> dict:
 
     risk = abs(price - stop)
     reward = abs(target - price)
-    pip = 0.01 if symbol.upper().endswith("JPY") else 0.0001
     return {
         "entry": round(price, decimals),
         "stop_loss": round(stop, decimals),
@@ -430,8 +488,29 @@ def decide(
     analysis: dict,
     ml_signal: dict | None = None,
     strategy_mode: str = "both",
+    *,
+    spread_ok: bool = True,
+    data_valid: bool = True,
+    thresholds=None,
 ) -> dict:
     """Aggregate both strategies (and the ML view) into one decision."""
+    from engine.scoring import compute_decision
+    return compute_decision(
+        analysis,
+        ml_signal,
+        strategy_mode=strategy_mode,
+        spread_ok=spread_ok,
+        data_valid=data_valid,
+        thresholds=thresholds,
+    )
+
+
+def _decide_legacy(
+    analysis: dict,
+    ml_signal: dict | None = None,
+    strategy_mode: str = "both",
+) -> dict:
+    """Legacy vote-based decision (kept for regression comparison)."""
     mode = normalize_strategy_mode(strategy_mode)
     symbol = analysis["symbol"]
     decimals = 3 if symbol.upper().endswith("JPY") else 5

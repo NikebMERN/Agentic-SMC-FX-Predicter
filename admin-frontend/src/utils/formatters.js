@@ -133,3 +133,21 @@ export function formatTimestamp(iso) {
     return String(iso).slice(0, 19);
   }
 }
+
+/** Human-readable email for admin user tables (Telegram accounts use placeholders). */
+export function formatUserEmail(user) {
+  if (!user) return "—";
+  if (user.email_display) return user.email_display;
+  const email = user.email || "";
+  if (!email) return "—";
+  if (email.endsWith("@telegram.local")) {
+    const chat = email.startsWith("tg_") ? email.slice(3).split("@")[0] : null;
+    return chat ? `Telegram · chat ${chat}` : `Telegram · ${user.username || "linked"}`;
+  }
+  return email;
+}
+
+export function isTelegramEmail(user) {
+  const email = user?.email || "";
+  return email.endsWith("@telegram.local") || user?.email_kind === "telegram";
+}

@@ -7,6 +7,8 @@ export default function ModelsPage() {
   const [symbol, setSymbol] = useState("EURUSD");
   const [models, setModels] = useState([]);
   const [candidates, setCandidates] = useState([]);
+  const [versions, setVersions] = useState([]);
+  const [mlMode, setMlMode] = useState("fresh");
   const [backtest, setBacktest] = useState(null);
   const [refreshRunning, setRefreshRunning] = useState(false);
   const [notice, setNotice] = useState("");
@@ -17,6 +19,9 @@ export default function ModelsPage() {
     setModels(d.models || []);
     const c = await api("/models/candidates");
     setCandidates(c.candidates || []);
+    const v = await api("/models/versions");
+    setVersions(v.versions || []);
+    if (v.ml_mode) setMlMode(v.ml_mode);
     try {
       const st = await api("/data/refresh/status");
       setRefreshRunning(Boolean(st.running));
@@ -60,6 +65,21 @@ export default function ModelsPage() {
   async function promote(versionId) {
     if (!confirm(`Promote model version ${versionId}?`)) return;
     await runAction(() => api(`/models/versions/${versionId}/promote`, { method: "POST" }), "Model promoted");
+  }
+
+  async function activateVersion(versionId) {
+    if (!confirm(`Activate model version ${versionId}? Predictions will use it when ML mode is "activated version".`)) return;
+    await runAction(() => api(`/models/versions/${versionId}/promote`, { method: "POST" }), `Version ${versionId} activated`);
+  }
+
+  async function changeMlMode(mode) {
+    setMlMode(mode);
+    await runAction(
+      () => api("/settings", { method: "POST", body: JSON.stringify({ ml_mode: mode }) }),
+      mode === "active"
+        ? "Predictions now use the activated model version (no retraining)"
+        : "Predictions now retrain a fresh model on every request"
+    );
   }
 
   async function refreshPair() {
@@ -136,6 +156,52 @@ export default function ModelsPage() {
         </div>
       )}
       {backtest?.error && <p className="mb-4 text-sm text-[#f85149]">{backtest.error}</p>}
+      <div className="mb-4 rounded-lg border border-[#30363d] bg-[#161b22] p-4">
+        <h2 className="mb-2 text-sm font-semibold">Prediction model mode</h2>
+        <label className="mr-4 text-sm">
+          <input type="radio" name="mlmode" checked={mlMode === "fresh"} onChange={() => changeMlMode("fresh")} className="mr-1" />
+          Retrain fresh on every request (self-training)
+        </label>
+        <label className="text-sm">
+          <input type="radio" name="mlmode" checked={mlMode === "active"} onChange={() => changeMlMode("active")} className="mr-1" />
+          Use the <strong>activated version</strong> below (no retraining)
+        </label>
+      </div>
+      {versions.length > 0 && (
+        <>
+          <h2 className="mb-2 text-sm font-semibold text-[#8b949e]">Version history — activate any saved model</h2>
+          <div className="mb-4 max-h-80 overflow-auto rounded-lg border border-[#30363d]">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-[#161b22] text-left text-[#8b949e]">
+                <tr><th className="p-2">ID</th><th>Symbol</th><th>Trained</th><th>Val acc</th><th>Samples</th><th>Status</th><th></th></tr>
+              </thead>
+              <tbody>
+                {versions.map((v) => (
+                  <tr key={v.id} className="border-t border-[#30363d]">
+                    <td className="p-2">{v.id}</td>
+                    <td>{v.symbol} <span className="text-xs text-[#8b949e]">{v.interval}</span></td>
+                    <td className="text-xs text-[#8b949e]">{v.trained_at ? new Date(v.trained_at).toLocaleString() : "-"}</td>
+                    <td>{v.val_accuracy != null ? `${(v.val_accuracy * 100).toFixed(1)}%` : "-"}</td>
+                    <td>{v.samples ?? "-"}</td>
+                    <td>
+                      {v.is_active
+                        ? <span className="rounded bg-[#1a3a24] px-2 py-0.5 text-xs text-[#3fb950]">ACTIVE</span>
+                        : v.file_exists
+                          ? <span className="text-xs text-[#8b949e]">saved</span>
+                          : <span className="text-xs text-[#d29922]" title="Trained before per-version files existed — weights not recoverable">no file</span>}
+                    </td>
+                    <td>
+                      {!v.is_active && v.file_exists && (
+                        <button type="button" onClick={() => activateVersion(v.id)} className="rounded bg-[#238636] px-2 py-0.5 text-xs text-white">Activate</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
       {candidates.length > 0 && (
         <>
           <h2 className="mb-2 text-sm font-semibold text-[#8b949e]">Candidates (promote to production)</h2>

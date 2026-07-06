@@ -76,33 +76,17 @@ def record_trade_outcome(trade, signal, label: str | None = None, features: dict
 
 
 def get_approved_training_samples(symbol: str | None = None, limit: int = 5000) -> list[dict]:
-    """Approved training records for retraining (replaces auto FeedbackSample for feedback loop)."""
-    from db.models import TrainingRecord
-    db = SessionLocal()
+    """Approved, cross-checked training rows for model retraining."""
+    from services.training_service import export_training_dataset
     try:
-        q = db.query(TrainingRecord).filter(TrainingRecord.admin_status == "APPROVED")
-        rows = q.order_by(TrainingRecord.id.desc()).limit(limit).all()
-        out = []
-        for r in rows:
-            if not r.final_label or not r.features_json:
-                continue
-            feat = json.loads(r.features_json)
-            if symbol:
-                from db.models import PredictionReview
-                pr = db.query(PredictionReview).filter(PredictionReview.id == r.prediction_id).first()
-                if not pr or pr.symbol.upper() != symbol.upper():
-                    continue
-            out.append({
-                "id": r.id,
-                "features": feat,
-                "label": r.final_label,
-            })
-        return out
+        rows = export_training_dataset(limit=limit, symbol=symbol, approved_only=True)
+        return [
+            {"id": r["record_id"], "features": r["features"], "label": r["label"]}
+            for r in rows
+        ]
     except Exception:
         log.debug("Approved training samples unavailable")
         return []
-    finally:
-        db.close()
 
 
 def approved_training_to_dataframe(pending: list[dict], feature_names: list[str]):
@@ -131,6 +115,9 @@ def get_pending_feedback(symbol: str, interval: str = "60min") -> list[dict]:
             {"id": r.id, "features": json.loads(r.features_json), "label": r.label}
             for r in rows
         ]
+    except Exception:
+        log.debug("Pending feedback samples unavailable")
+        return []
     finally:
         db.close()
 
@@ -175,6 +162,9 @@ def get_active_model_version(symbol: str, interval: str = "60min") -> ModelVersi
             )
             .first()
         )
+    except Exception:
+        log.debug("Active model version lookup unavailable")
+        return None
     finally:
         db.close()
 
@@ -220,7 +210,7 @@ def promote_model_version(version_id: int) -> ModelVersion | None:
         db.close()
 
 
-def save_model_version(symbol: str, interval: str, path: str, metrics: dict, promote: bool) -> ModelVersion:
+def save_model_version(symbol: str, interval: str, path: str, metrics: dict, promote: bool) -> ModelVersion | None:
     db = SessionLocal()
     try:
         if promote:
@@ -241,5 +231,9 @@ def save_model_version(symbol: str, interval: str, path: str, metrics: dict, pro
         db.commit()
         db.refresh(row)
         return row
+    except Exception:
+        log.debug("Model version save unavailable")
+        db.rollback()
+        return None
     finally:
         db.close()

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client.js";
 import PageAlerts from "../components/PageAlerts.jsx";
 import {
@@ -7,22 +7,44 @@ import {
   formatTimestamp,
 } from "../utils/formatters.js";
 
-const STATUSES = ["", "PENDING_REVIEW", "APPROVED", "REJECTED", "NEEDS_MORE_DATA"];
+const STATUSES = [
+  ["CONFLICTS", "Needs your review (conflicts)"],
+  ["APPROVED", "In training ground (auto-approved)"],
+  ["", "All statuses"],
+  ["NEEDS_MORE_DATA", "Needs more data"],
+  ["REJECTED", "Rejected"],
+  ["READY", "Training-ready only"],
+];
+
+function formatQuality(score) {
+  if (score == null || score === "") return "—";
+  const n = Number(score);
+  return Number.isFinite(n) ? n.toFixed(2) : String(score);
+}
 
 export default function TrainingRecordsPage() {
   const [records, setRecords] = useState([]);
-  const [filter, setFilter] = useState("PENDING_REVIEW");
+  const [filter, setFilter] = useState("CONFLICTS");
   const [expanded, setExpanded] = useState(null);
   const [notes, setNotes] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  const loadRecords = useCallback(async (status = filter) => {
+  const loadRecords = useCallback(async (status = filter, refresh = false) => {
     setLoading(true);
     setError("");
     try {
-      const q = status ? `?status=${status}` : "";
+      const params = new URLSearchParams();
+      if (status === "READY") {
+        params.set("ready", "1");
+      } else if (status === "CONFLICTS") {
+        params.set("conflicts", "1");
+      } else if (status) {
+        params.set("status", status);
+      }
+      if (refresh) params.set("refresh", "1");
+      const q = params.toString() ? `?${params}` : "";
       const data = await api(`/training-records${q}`);
       setRecords(data.records || []);
     } catch (e) {
@@ -33,8 +55,15 @@ export default function TrainingRecordsPage() {
   }, [filter]);
 
   useEffect(() => {
-    loadRecords(filter);
+    loadRecords(filter, true);
   }, [filter, loadRecords]);
+
+  const stats = useMemo(() => {
+    const ready = records.filter((r) => r.training_ready).length;
+    const conflicts = records.filter((r) => r.needs_manual_review).length;
+    const approved = records.filter((r) => r.admin_status === "APPROVED").length;
+    return { ready, conflicts, approved };
+  }, [records]);
 
   async function review(id, admin_status) {
     setError("");
@@ -54,18 +83,18 @@ export default function TrainingRecordsPage() {
     }
   }
 
-  async function exportApproved() {
+  async function exportDataset() {
     setError("");
     try {
-      const data = await api("/training-records/export");
-      const blob = new Blob([JSON.stringify(data.records, null, 2)], { type: "application/json" });
+      const data = await api("/training-records/dataset");
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `training-records-approved-${Date.now()}.json`;
+      a.download = `training-dataset-${Date.now()}.json`;
       a.click();
       URL.revokeObjectURL(url);
-      setNotice(`Exported ${data.count ?? data.records?.length ?? 0} approved records`);
+      setNotice(`Exported ${data.count ?? 0} cross-checked training samples`);
     } catch (e) {
       setError(e.message);
     }
@@ -75,22 +104,55 @@ export default function TrainingRecordsPage() {
 
   return (
     <div>
-      <h1 className="mb-4 text-lg font-semibold">Training records</h1>
+      <h1 className="mb-2 text-lg font-semibold">Training records</h1>
+      <p className="mb-4 max-w-3xl text-sm text-[#8b949e]">
+        Matching user feedback and market data is automatic. Clean records go straight to the training ground —
+        you only need to approve or reject when there is a <strong className="text-[#e6edf3]">conflict</strong>.
+      </p>
       <PageAlerts error={error} notice={notice} onClearNotice={() => setNotice("")} />
+
+      <div className="mb-4 grid gap-3 sm:grid-cols-3">
+        <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-3">
+          <div className="text-xl font-bold text-[#3fb950]">{stats.ready}</div>
+          <div className="text-xs text-[#8b949e]">Training-ready in view</div>
+        </div>
+        <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-3">
+          <div className="text-xl font-bold text-[#f85149]">{stats.conflicts}</div>
+          <div className="text-xs text-[#8b949e]">Awaiting your decision</div>
+        </div>
+        <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-3">
+          <div className="text-xl font-bold">{stats.approved}</div>
+          <div className="text-xs text-[#8b949e]">Auto-approved for training</div>
+        </div>
+      </div>
+
       <div className="mb-4 flex flex-wrap gap-2">
         <select
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           className="rounded border border-[#30363d] bg-[#0d1117] px-3 py-2 text-sm"
         >
-          {STATUSES.map((s) => (
-            <option key={s || "all"} value={s}>{s || "All statuses"}</option>
+          {STATUSES.map(([value, label]) => (
+            <option key={value || "all"} value={value}>{label}</option>
           ))}
         </select>
-        <button type="button" onClick={exportApproved} className="rounded border border-[#30363d] px-3 py-2 text-sm hover:bg-[#21262d]">
-          Export approved
+        <button
+          type="button"
+          onClick={() => loadRecords(filter, true)}
+          disabled={loading}
+          className="rounded border border-[#30363d] px-3 py-2 text-sm hover:bg-[#21262d] disabled:opacity-50"
+        >
+          {loading ? "Refreshing…" : "Refresh cross-check"}
+        </button>
+        <button
+          type="button"
+          onClick={exportDataset}
+          className="rounded bg-[#238636] px-3 py-2 text-sm text-white hover:bg-[#2ea043]"
+        >
+          Export training dataset
         </button>
       </div>
+
       <div className="space-y-3">
         {records.map((r) => (
           <div key={r.id} className="rounded-lg border border-[#30363d] bg-[#161b22] p-4 text-sm">
@@ -101,36 +163,63 @@ export default function TrainingRecordsPage() {
             >
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">#{r.id}</span>
-                <span className="text-[#8b949e]">prediction {r.prediction_id}</span>
-                {r.conflict && (
-                  <span className="rounded bg-[#3d1d20] px-2 py-0.5 text-xs text-[#f85149]">conflict</span>
+                <span className="text-[#8b949e]">{r.symbol} · {r.interval} · prediction {r.prediction_id}</span>
+                {r.training_ready && (
+                  <span className="rounded bg-[#1a3d2a] px-2 py-0.5 text-xs text-[#3fb950]">training ready</span>
+                )}
+                {r.auto_approved && (
+                  <span className="rounded bg-[#1a3d2a] px-2 py-0.5 text-xs text-[#3fb950]">auto-approved</span>
+                )}
+                {r.needs_manual_review && (
+                  <span className="rounded bg-[#3d1d20] px-2 py-0.5 text-xs text-[#f85149]">needs review</span>
                 )}
                 <span className="rounded bg-[#21262d] px-2 py-0.5 text-xs">{r.admin_status}</span>
               </div>
               <span className="text-xs text-[#8b949e]">{expanded === r.id ? "▲" : "▼"}</span>
             </button>
+
             <p className="text-[#8b949e]">
               User: <strong className="text-white">{r.username || "—"}</strong>
-              {" · "}{r.symbol} · {r.predicted_action}
+              {" · "}{r.predicted_action}
+              {" · "}Final label: <strong className="text-white">{r.final_label ?? "—"}</strong>
+              {" · "}Quality: <strong className="text-white">{formatQuality(r.label_quality_score)}</strong>
             </p>
             <p className="text-[#8b949e]">
               You: {formatFeedbackLabel(r.user_feedback)} · Market: {formatMarketDirection(r.market_direction)} ({r.market_outcome || "—"})
             </p>
+            {r.cross_check?.summary && (
+              <p className="mt-1 text-xs text-[#6e7681]">Cross-check: {r.cross_check.summary}</p>
+            )}
+
             {expanded === r.id && (
               <div className="mt-3 border-t border-[#30363d] pt-3 text-xs text-[#8b949e]">
-                <div className="mb-2 grid gap-1 sm:grid-cols-2">
+                <div className="mb-2 grid gap-1 sm:grid-cols-2 lg:grid-cols-3">
                   <span>Market label: {r.label_from_market ?? "—"}</span>
                   <span>User label: {r.label_from_user ?? "—"}</span>
                   <span>Final label: {r.final_label ?? "—"}</span>
-                  <span>Quality score: {r.label_quality_score ?? "—"}</span>
+                  <span>Quality score: {formatQuality(r.label_quality_score)}</span>
+                  <span>Interval: {r.interval ?? "—"}</span>
                   <span>Reviewed: {formatTimestamp(r.reviewed_at)}</span>
-                  <span>Created: {formatTimestamp(r.created_at)}</span>
                 </div>
                 {r.admin_notes && <p className="mb-2">Notes: {r.admin_notes}</p>}
+                {r.training_sample ? (
+                  <div>
+                    <p className="mb-1 font-medium text-[#e6edf3]">Raw training sample</p>
+                    <pre className="max-h-64 overflow-auto rounded border border-[#30363d] bg-[#0d1117] p-2 text-[11px] leading-relaxed text-[#c9d1d9]">
+                      {JSON.stringify(r.training_sample, null, 2)}
+                    </pre>
+                  </div>
+                ) : (
+                  <p className="text-[#f0883e]">Not enough cross-checked data to build a training row yet.</p>
+                )}
               </div>
             )}
-            {r.admin_status === "PENDING_REVIEW" && (
+
+            {r.needs_manual_review && (
               <>
+                <p className="mt-2 text-xs text-[#f85149]">
+                  User feedback disagrees with market — choose whether to trust the user or the market label.
+                </p>
                 <textarea
                   value={notes[r.id] ?? ""}
                   onChange={(e) => setNotes({ ...notes, [r.id]: e.target.value })}
@@ -140,20 +229,29 @@ export default function TrainingRecordsPage() {
                 />
                 <div className="mt-2 flex flex-wrap gap-2">
                   <button type="button" onClick={() => review(r.id, "APPROVED")} className="rounded bg-[#238636] px-3 py-1 text-xs text-white">
-                    Approve
+                    Approve (use market label)
                   </button>
                   <button type="button" onClick={() => review(r.id, "REJECTED")} className="rounded bg-[#da3633] px-3 py-1 text-xs text-white">
                     Reject
                   </button>
-                  <button type="button" onClick={() => review(r.id, "NEEDS_MORE_DATA")} className="rounded border border-[#30363d] px-3 py-1 text-xs">
-                    Needs data
-                  </button>
                 </div>
               </>
             )}
+
+            {r.admin_status === "APPROVED" && !r.needs_manual_review && (
+              <p className="mt-2 text-xs text-[#3fb950]">
+                Sent to training ground automatically — no action needed.
+              </p>
+            )}
           </div>
         ))}
-        {!records.length && <p className="text-[#8b949e]">No records in this queue.</p>}
+        {!records.length && (
+          <p className="text-[#8b949e]">
+            {filter === "CONFLICTS"
+              ? "No conflicts waiting — clean records are auto-approved."
+              : "No records in this filter."}
+          </p>
+        )}
       </div>
     </div>
   );

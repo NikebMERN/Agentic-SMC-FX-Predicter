@@ -55,6 +55,77 @@ def _load_killzones() -> dict:
 KILLZONES = _load_killzones()
 
 
+# Trading sessions (New York local clock — matches DATA_TZ when set to US/Eastern)
+_TRADING_SESSIONS = {
+    "Asian": (dtime(19, 0), dtime(2, 0)),       # wraps midnight
+    "London": (dtime(2, 0), dtime(5, 0)),
+    "LondonOpen": (dtime(2, 0), dtime(5, 0)),
+    "NewYorkAM": (dtime(7, 0), dtime(10, 0)),
+    "Overlap": (dtime(8, 0), dtime(12, 0)),
+    "NewYorkPM": (dtime(13, 0), dtime(16, 0)),
+}
+
+# ICT Silver Bullet windows (optional weight boost)
+_SILVER_BULLET = {
+    "LondonSB": (dtime(3, 0), dtime(4, 0)),
+    "NewYorkAMSB": (dtime(10, 0), dtime(11, 0)),
+    "NewYorkPMSB": (dtime(14, 0), dtime(15, 0)),
+}
+
+
+def _in_window(t: dtime, start: dtime, end: dtime) -> bool:
+    if start <= end:
+        return start <= t < end
+    return t >= start or t < end
+
+
+def session_info(ts: pd.Timestamp) -> dict:
+    """Active trading session(s) and timing weight (never sole signal)."""
+    t = ts.time()
+    active: list[str] = []
+    for name, (start, end) in _TRADING_SESSIONS.items():
+        if _in_window(t, start, end):
+            active.append(name)
+    silver = [n for n, (s, e) in _SILVER_BULLET.items() if _in_window(t, s, e)]
+    weight = 0.5
+    if active:
+        weight = 0.85
+    if "Overlap" in active or "NewYorkAM" in active:
+        weight = 1.0
+    if silver:
+        weight = min(1.0, weight + 0.1)
+    if not active:
+        weight = 0.35
+    return {
+        "active": active[0] if active else None,
+        "sessions": active,
+        "silver_bullet": silver[0] if silver else None,
+        "weight": weight,
+    }
+
+
+def pdh_pdl(df: pd.DataFrame) -> dict:
+    """Previous day high/low from daily-resampled bars."""
+    if df is None or len(df) < 2:
+        return {}
+    daily = df.resample("1D").agg({"High": "max", "Low": "min"}).dropna()
+    if len(daily) < 2:
+        return {}
+    prev = daily.iloc[-2]
+    return {"pdh": float(prev["High"]), "pdl": float(prev["Low"])}
+
+
+def pwh_pwl(df: pd.DataFrame) -> dict:
+    """Previous week high/low."""
+    if df is None or len(df) < 5:
+        return {}
+    weekly = df.resample("W").agg({"High": "max", "Low": "min"}).dropna()
+    if len(weekly) < 2:
+        return {}
+    prev = weekly.iloc[-2]
+    return {"pwh": float(prev["High"]), "pwl": float(prev["Low"])}
+
+
 def active_killzone(ts: pd.Timestamp) -> str | None:
     """Name of the kill zone containing ts, or None."""
     t = ts.time()

@@ -66,6 +66,20 @@ def _serialize(obj):
     return out
 
 
+def _user_email_fields(user, telegram_link: TelegramLink | None = None) -> dict:
+    """Raw email + admin-friendly display label."""
+    email = (user.email or "").strip()
+    if email.endswith("@telegram.local"):
+        chat = email[3:].split("@", 1)[0] if email.startswith("tg_") else None
+        if telegram_link and telegram_link.chat_id:
+            chat = telegram_link.chat_id
+        label = f"Telegram · chat {chat}" if chat else f"Telegram · {user.username}"
+        return {"email": email, "email_display": label, "email_kind": "telegram"}
+    if not email:
+        return {"email": None, "email_display": "—", "email_kind": "missing"}
+    return {"email": email, "email_display": email, "email_kind": "standard"}
+
+
 def _outcome_score_meta(score: int | None) -> dict:
     if score == OUTCOME_WIN:
         return {
@@ -379,6 +393,27 @@ def overview(admin_id):
     any_key_set = oanda_set or av_set
     live_fetch = provider != "none"
 
+    threshold_summary = {"active": False, "version_tag": None, "version_id": None}
+    try:
+        from services.threshold_service import get_active_version
+        tv = get_active_version()
+        if tv:
+            threshold_summary = {
+                "active": True,
+                "version_tag": tv.version_tag,
+                "version_id": tv.id,
+                "created_at": tv.created_at.isoformat() if tv.created_at else None,
+            }
+    except Exception:
+        pass
+
+    accuracy_by_pair = []
+    try:
+        from services.pair_performance import list_pair_performance
+        accuracy_by_pair = list_pair_performance(limit=20)
+    except Exception:
+        pass
+
     return jsonify({
         "stats": stats,
         "health": {
@@ -403,6 +438,8 @@ def overview(admin_id):
         "interval": INTERVAL,
         "server_time": datetime.now(timezone.utc).isoformat(),
         "latest_backtest": _read_latest_backtest(),
+        "thresholds": threshold_summary,
+        "accuracy_by_pair": accuracy_by_pair,
     })
 
 
@@ -441,6 +478,7 @@ def get_user_detail(admin_id, user_id):
         tg = db.query(TelegramLink).filter(TelegramLink.user_id == user_id).first()
         profile = _serialize(user)
         profile.pop("password_hash", None)
+        profile.update(_user_email_fields(user, tg))
         counts = {
             "signals": db.query(Signal).filter(Signal.user_id == user_id).count(),
             "trades": db.query(Trade).filter(Trade.user_id == user_id).count(),
@@ -842,9 +880,16 @@ def admin_predict(admin_id):
         strategy = normalize_strategy_mode(raw_strategy)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+    horizon = (data.get("horizon") or data.get("trading_style") or "intraday").strip().lower()
+    mtf_flag = data.get("mtf")
     try:
         result = predict_symbol(
-            symbol, interval=interval, fetch=fetch, strategy_mode=strategy
+            symbol,
+            interval=interval if raw_interval else None,
+            fetch=fetch,
+            strategy_mode=strategy,
+            mtf=bool(mtf_flag) if mtf_flag is not None else None,
+            trading_style=horizon,
         )
         return jsonify(result)
     except Exception as exc:
@@ -859,6 +904,8 @@ def admin_predict(admin_id):
 @admin_required
 def get_settings(admin_id):
     from engine.confluence import SL_MAX_PCT_DEFAULT, TP_MAX_PCT_DEFAULT
+    from config.smc_ict_thresholds import DEFAULT_THRESHOLDS
+    from utils.thresholds import get_thresholds, list_pair_thresholds
     return jsonify({
         "effective": {
             "supported_pairs": settings.get_supported_pairs(),
@@ -868,7 +915,11 @@ def get_settings(admin_id):
             "disabled_pairs": settings.get("disabled_pairs", ""),
             "sl_max_pct": settings.get_float("sl_max_pct", SL_MAX_PCT_DEFAULT),
             "tp_max_pct": settings.get_float("tp_max_pct", TP_MAX_PCT_DEFAULT),
+            "ml_mode": settings.get("ml_mode", "fresh"),
+            "trading_thresholds": get_thresholds(),
         },
+        "threshold_defaults": DEFAULT_THRESHOLDS.model_dump(),
+        "pair_thresholds": list_pair_thresholds(),
         "overrides": settings.all_settings(),
     })
 
@@ -934,11 +985,212 @@ def update_settings(admin_id):
             settings.set(key, str(value))
             applied[key] = value
 
+    if "ml_mode" in data:
+        value = str(data["ml_mode"]).strip().lower()
+        if value not in ("fresh", "active"):
+            return jsonify({"error": "ml_mode must be 'fresh' (retrain each request) or 'active' (use the activated model version)"}), 400
+        settings.set("ml_mode", value)
+        applied["ml_mode"] = value
+
+    if "trading_thresholds" in data and isinstance(data["trading_thresholds"], dict):
+        from utils.thresholds import get_thresholds
+        from services.threshold_service import patch_active_version
+        from schemas.threshold_schema import ThresholdValidationError
+        from services.threshold_service import _flat_to_nested_patch
+        try:
+            patch = _flat_to_nested_patch(data["trading_thresholds"])
+            patch_active_version(patch, admin_id, notes="Updated from settings page")
+            merged = get_thresholds()
+        except ThresholdValidationError as exc:
+            return jsonify({"error": str(exc), "details": exc.errors}), 400
+        applied["trading_thresholds"] = merged
+
     if not applied:
         return jsonify({"error": "Nothing to update"}), 400
     log.info("Admin %s updated settings: %s", admin_id, applied)
     log_admin_action(admin_id, "update_settings", "settings", None, applied)
     return jsonify({"message": "Settings saved", "applied": applied})
+
+
+@admin_bp.route("/admin/api/thresholds/active")
+@admin_required
+def thresholds_active(admin_id):
+    from services.threshold_service import get_active_version_payload
+    return jsonify(get_active_version_payload())
+
+
+@admin_bp.route("/admin/api/thresholds/resolve")
+@admin_required
+def thresholds_resolve(admin_id):
+    from services.threshold_service import resolve_thresholds
+    pair = request.args.get("pair", "EURUSD")
+    interval = request.args.get("interval", "60min")
+    style = request.args.get("style", "intraday")
+    thresholds, version_id = resolve_thresholds(pair, interval, style)
+    return jsonify({
+        "pair": pair.upper(),
+        "interval": interval,
+        "trading_style": style,
+        "threshold_version_id": version_id,
+        "config": thresholds.model_dump(),
+    })
+
+
+@admin_bp.route("/admin/api/thresholds/active", methods=["PATCH"])
+@admin_required
+def thresholds_patch_active(admin_id):
+    from schemas.threshold_schema import ThresholdValidationError
+    from services.threshold_service import patch_active_version
+    data = request.get_json(silent=True) or {}
+    patch = data.get("patch") or data.get("config") or data
+    if not isinstance(patch, dict):
+        return jsonify({"error": "patch object required"}), 400
+    try:
+        row = patch_active_version(patch, admin_id, notes=data.get("notes"))
+    except ThresholdValidationError as exc:
+        return jsonify({"error": str(exc), "details": exc.errors}), 400
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    log_admin_action(admin_id, "threshold_version_create", "threshold", row.id, {"tag": row.version_tag})
+    return jsonify({"message": "New threshold version created and activated", "version": row.id, "tag": row.version_tag})
+
+
+@admin_bp.route("/admin/api/thresholds/versions", methods=["GET", "POST"])
+@admin_required
+def threshold_versions(admin_id):
+    from schemas.threshold_schema import ThresholdValidationError, validate_threshold_config
+    from services.threshold_service import create_version, list_history
+    if request.method == "GET":
+        limit = min(int(request.args.get("limit", 50)), 200)
+        return jsonify({"versions": list_history(limit)})
+    data = request.get_json(silent=True) or {}
+    config = data.get("config")
+    tag = str(data.get("version_tag") or data.get("tag") or "").strip()
+    if not tag or not isinstance(config, dict):
+        return jsonify({"error": "version_tag and config required"}), 400
+    try:
+        validate_threshold_config(config)
+        row = create_version(config, tag, admin_id, data.get("notes"), activate=bool(data.get("activate")))
+    except ThresholdValidationError as exc:
+        return jsonify({"error": str(exc), "details": exc.errors}), 400
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    log_admin_action(admin_id, "threshold_version_create", "threshold", row.id, {"tag": tag})
+    return jsonify({"message": "Version created", "version": row.id, "tag": row.version_tag})
+
+
+@admin_bp.route("/admin/api/thresholds/versions/<int:version_id>")
+@admin_required
+def threshold_version_detail(admin_id, version_id):
+    import json
+    from db.models import ThresholdVersion
+    from services.threshold_service import _serialize_version
+    db = SessionLocal()
+    try:
+        row = db.query(ThresholdVersion).filter(ThresholdVersion.id == version_id).first()
+        if not row:
+            return jsonify({"error": "Threshold version not found"}), 404
+        try:
+            config = json.loads(row.config_json) if row.config_json else {}
+        except json.JSONDecodeError:
+            config = {}
+        return jsonify({"version": _serialize_version(row), "config": config})
+    finally:
+        db.close()
+
+
+@admin_bp.route("/admin/api/thresholds/versions/<int:version_id>/activate", methods=["POST"])
+@admin_required
+def threshold_activate(admin_id, version_id):
+    from services.threshold_service import activate_version
+    try:
+        row = activate_version(version_id, admin_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+    log_admin_action(admin_id, "threshold_version_activate", "threshold", version_id, {"tag": row.version_tag})
+    return jsonify({"message": "Version activated", "version": version_id, "tag": row.version_tag})
+
+
+@admin_bp.route("/admin/api/thresholds/overrides", methods=["GET"])
+@admin_required
+def threshold_overrides_list(admin_id):
+    from services.threshold_service import list_overrides
+    return jsonify({"overrides": list_overrides()})
+
+
+@admin_bp.route("/admin/api/thresholds/overrides/<symbol>", methods=["GET", "PATCH"])
+@admin_required
+def threshold_overrides(admin_id, symbol):
+    from schemas.threshold_schema import ThresholdValidationError
+    from services.threshold_service import list_overrides, save_override
+    try:
+        sym = normalize_symbol(symbol) if symbol != "*" else "*"
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    interval = (request.args.get("interval") or "*").strip()
+    style = (request.args.get("style") or "*").strip()
+    if request.method == "GET":
+        rows = [r for r in list_overrides() if r["symbol"] == sym.upper()]
+        return jsonify({"symbol": sym, "overrides": rows})
+    data = request.get_json(silent=True) or {}
+    patch = data.get("patch") or data
+    if not isinstance(patch, dict):
+        return jsonify({"error": "patch object required"}), 400
+    iv = str(data.get("interval") or interval or "*")
+    st = str(data.get("trading_style") or data.get("style") or style or "*")
+    try:
+        saved = save_override(sym, iv, st, patch, admin_id)
+    except ThresholdValidationError as exc:
+        return jsonify({"error": str(exc), "details": exc.errors}), 400
+    log_admin_action(admin_id, "threshold_override_update", "threshold_override", sym, {"interval": iv, "style": st})
+    return jsonify({"message": "Override saved", **saved})
+
+
+@admin_bp.route("/admin/api/thresholds/backtest", methods=["POST"])
+@admin_required
+def threshold_backtest_route(admin_id):
+    from engine.data import get_data
+    from services.threshold_backtest import compare_threshold_versions, run_threshold_backtest
+    from services.threshold_service import resolve_thresholds
+    data = request.get_json(silent=True) or {}
+    symbol = str(data.get("symbol") or "EURUSD").upper()
+    interval = str(data.get("interval") or "60min")
+    style = str(data.get("trading_style") or "intraday")
+    version_a = data.get("version_a_id")
+    version_b = data.get("version_b_id")
+    try:
+        df, _ = get_data(symbol, interval, fetch=False)
+    except Exception as exc:
+        return jsonify({"error": f"Data unavailable: {exc}"}), 400
+    if version_a and version_b:
+        result = compare_threshold_versions(symbol, df, int(version_a), int(version_b), trading_style=style, interval=interval)
+    else:
+        thresholds, vid = resolve_thresholds(symbol, interval, style)
+        result = run_threshold_backtest(symbol, df, thresholds, trading_style=style, interval=interval)
+        result["threshold_version_id"] = vid
+    log_admin_action(admin_id, "threshold_backtest", "threshold", symbol, {"interval": interval})
+    return jsonify(result)
+
+
+@admin_bp.route("/admin/api/thresholds/<symbol>", methods=["GET", "POST"])
+@admin_required
+def pair_thresholds(admin_id, symbol):
+    from utils.thresholds import get_thresholds, save_pair_thresholds
+    try:
+        sym = normalize_symbol(symbol)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    interval = (request.args.get("interval") or "*").strip()
+    if request.method == "GET":
+        return jsonify({"symbol": sym, "interval": interval, "thresholds": get_thresholds(sym, interval)})
+    data = request.get_json(silent=True) or {}
+    iv = str(data.get("interval") or interval or "*")
+    updates = data.get("thresholds") or data
+    if not isinstance(updates, dict):
+        return jsonify({"error": "thresholds object required"}), 400
+    merged = save_pair_thresholds(sym, iv, updates)
+    log_admin_action(admin_id, "update_pair_thresholds", "pair", sym, {"interval": iv})
+    return jsonify({"message": "Pair thresholds saved", "symbol": sym, "interval": iv, "thresholds": merged})
 
 
 @admin_bp.route("/admin/api/users/<int:user_id>/quota", methods=["POST"])
@@ -969,10 +1221,40 @@ def set_user_quota(admin_id, user_id):
 @admin_bp.route("/admin/api/training-records")
 @admin_required
 def list_training_records_route(admin_id):
-    from services.training_service import list_training_records
+    from services.training_service import list_training_records, sync_training_records
     status = (request.args.get("status") or "").strip() or None
     limit = min(int(request.args.get("limit", 100)), 500)
-    return jsonify({"records": list_training_records(status=status, limit=limit)})
+    ready_only = request.args.get("ready") == "1"
+    conflicts_only = request.args.get("conflicts") == "1" or status == "CONFLICTS"
+    if status == "CONFLICTS":
+        status = None
+    if request.args.get("refresh") == "1":
+        synced = sync_training_records(limit=limit)
+        log.info("Admin %s refreshed %s training records", admin_id, synced)
+    records = list_training_records(
+        status=status,
+        limit=limit,
+        ready_only=ready_only,
+        conflicts_only=conflicts_only,
+    )
+    ready_count = sum(1 for r in records if r.get("training_ready"))
+    manual_count = sum(1 for r in records if r.get("needs_manual_review"))
+    return jsonify({
+        "records": records,
+        "ready_count": ready_count,
+        "manual_review_count": manual_count,
+        "count": len(records),
+    })
+
+
+@admin_bp.route("/admin/api/training-records/refresh", methods=["POST"])
+@admin_required
+def refresh_training_records(admin_id):
+    from services.training_service import sync_training_records
+    limit = min(int((request.get_json(silent=True) or {}).get("limit", 500)), 1000)
+    synced = sync_training_records(limit=limit)
+    log_admin_action(admin_id, "refresh_training_records", "training_record", None, {"synced": synced})
+    return jsonify({"message": f"Cross-checked {synced} records", "synced": synced})
 
 
 @admin_bp.route("/admin/api/training-records/<int:record_id>/review", methods=["PATCH"])
@@ -1012,6 +1294,26 @@ def export_training_records(admin_id):
     return jsonify({"records": records, "count": len(records)})
 
 
+@admin_bp.route("/admin/api/training-records/dataset")
+@admin_required
+def export_training_dataset_route(admin_id):
+    from services.training_service import export_training_dataset
+    limit = min(int(request.args.get("limit", 5000)), 10000)
+    symbol = (request.args.get("symbol") or "").strip().upper() or None
+    samples = export_training_dataset(limit=limit, symbol=symbol, approved_only=True)
+    log_admin_action(
+        admin_id, "export_training_dataset", "training_record", None,
+        {"count": len(samples), "symbol": symbol},
+    )
+    return jsonify({
+        "version": 1,
+        "description": "Cross-checked feature vectors with verified market labels for model training",
+        "symbol_filter": symbol,
+        "count": len(samples),
+        "samples": samples,
+    })
+
+
 @admin_bp.route("/admin/api/analytics")
 @admin_required
 def admin_analytics(admin_id):
@@ -1022,23 +1324,32 @@ def admin_analytics(admin_id):
         reviews = db.query(PredictionReview).filter(PredictionReview.status == "evaluated").all()
         by_pair: dict[str, dict] = {}
         by_interval: dict[str, dict] = {}
+        by_horizon: dict[str, dict] = {}
+        by_action: dict[str, int] = {}
         calibration: dict[str, dict] = {}
         no_trade_reasons: dict[str, int] = {}
         conflicts = db.query(TrainingRecord).filter(TrainingRecord.conflict.is_(True)).count()
         verify_failures = db.query(PredictionReview).filter(
             PredictionReview.status == "verification_failed"
         ).count()
+        all_reviews = db.query(PredictionReview).all()
+        for r in all_reviews:
+            by_action[r.predicted_action] = by_action.get(r.predicted_action, 0) + 1
 
         for r in reviews:
             pair = r.symbol
             iv = r.interval or "60min"
+            hz = r.horizon or "intraday"
             by_pair.setdefault(pair, {"total": 0, "correct": 0})
             by_interval.setdefault(iv, {"total": 0, "correct": 0})
+            by_horizon.setdefault(hz, {"total": 0, "correct": 0})
             by_pair[pair]["total"] += 1
             by_interval[iv]["total"] += 1
+            by_horizon[hz]["total"] += 1
             if r.was_correct:
                 by_pair[pair]["correct"] += 1
                 by_interval[iv]["correct"] += 1
+                by_horizon[hz]["correct"] += 1
 
             bucket = "high" if (r.predicted_confidence or 0) >= 0.7 else (
                 "medium" if (r.predicted_confidence or 0) >= 0.55 else "low"
@@ -1069,10 +1380,13 @@ def admin_analytics(admin_id):
         return jsonify({
             "accuracy_by_pair": _accuracy(by_pair),
             "accuracy_by_interval": _accuracy(by_interval),
+            "accuracy_by_horizon": _accuracy(by_horizon),
+            "action_counts": by_action,
             "calibration": _accuracy(calibration),
             "conflict_count": conflicts,
             "verification_failure_count": verify_failures,
             "no_trade_reasons": no_trade_reasons,
+            "total_predictions": len(all_reviews),
         })
     finally:
         db.close()
@@ -1083,7 +1397,18 @@ def admin_analytics(admin_id):
 def list_prediction_reviews(admin_id):
     from services.prediction_review import list_reviews
     status = (request.args.get("status") or "").strip() or None
-    return jsonify({"reviews": list_reviews(status=status)})
+    symbol = (request.args.get("symbol") or "").strip().upper() or None
+    conflicts_only = request.args.get("conflicts") == "1"
+    correct_only = request.args.get("correct") == "1"
+    limit = min(int(request.args.get("limit", 200)), 500)
+    reviews = list_reviews(
+        status=status,
+        symbol=symbol,
+        conflicts_only=conflicts_only,
+        correct_only=correct_only,
+        limit=limit,
+    )
+    return jsonify({"reviews": reviews, "count": len(reviews)})
 
 
 @admin_bp.route("/admin/api/reviews/<int:review_id>/retrain", methods=["POST"])
@@ -1119,6 +1444,43 @@ def retrain_from_review(admin_id, review_id):
         return jsonify({"error": str(exc)}), 500
 
 
+@admin_bp.route("/admin/api/reviews/bulk-retrain", methods=["POST"])
+@admin_required
+def bulk_retrain_reviews(admin_id):
+    from services.prediction_review import bulk_retrain_reviews as run_bulk
+
+    data = request.get_json(silent=True) or {}
+    review_ids = data.get("review_ids") or []
+    use_all = bool(data.get("use_all"))
+    promote = bool(data.get("promote", True))
+    symbol = (data.get("symbol") or "").strip().upper() or None
+    conflicts_only = bool(data.get("conflicts_only"))
+    correct_only = bool(data.get("correct_only"))
+    status = (data.get("status") or "evaluated").strip() or "evaluated"
+
+    try:
+        result = run_bulk(
+            review_ids=[int(x) for x in review_ids] if review_ids else None,
+            use_all=use_all,
+            status=status if use_all else None,
+            symbol=symbol,
+            conflicts_only=conflicts_only,
+            correct_only=correct_only,
+            promote=promote,
+        )
+        if result.get("error"):
+            return jsonify(result), 422
+        log_admin_action(admin_id, "bulk_retrain_reviews", "review", None, {
+            "count": result.get("reviews_processed", 0),
+            "symbols": result.get("symbols", []),
+            "promote": promote,
+        })
+        return jsonify(result)
+    except Exception as exc:
+        log.exception("bulk retrain failed")
+        return jsonify({"error": str(exc)}), 500
+
+
 @admin_bp.route("/admin/api/reviews/<int:review_id>/dismiss", methods=["POST"])
 @admin_required
 def dismiss_review(admin_id, review_id):
@@ -1135,6 +1497,42 @@ def list_model_candidates(admin_id):
     from services.feedback_service import get_model_candidates
     symbol = (request.args.get("symbol") or "").strip().upper() or None
     return jsonify({"candidates": get_model_candidates(symbol=symbol, interval=INTERVAL)})
+
+
+@admin_bp.route("/admin/api/models/versions")
+@admin_required
+def list_model_versions(admin_id):
+    """Every trained model version (active and historical) — the admin
+    can re-activate any of them at any time."""
+    symbol = (request.args.get("symbol") or "").strip().upper() or None
+    limit = min(int(request.args.get("limit", 100)), 300)
+    db = SessionLocal()
+    try:
+        q = db.query(ModelVersion).order_by(ModelVersion.id.desc())
+        if symbol:
+            q = q.filter(ModelVersion.symbol == symbol)
+        rows = q.limit(limit).all()
+        versions = []
+        for r in rows:
+            versions.append({
+                "id": r.id,
+                "symbol": r.symbol,
+                "interval": r.interval,
+                "val_accuracy": r.val_accuracy,
+                "samples": r.samples,
+                "is_active": bool(r.is_active),
+                "trained_at": r.trained_at.isoformat() if r.trained_at else None,
+                # versions saved before per-version files share one path;
+                # only file-backed versions can actually be re-activated
+                "file_exists": bool(r.path and os.path.exists(r.path)),
+                "file": os.path.basename(r.path) if r.path else None,
+            })
+        return jsonify({
+            "versions": versions,
+            "ml_mode": settings.get("ml_mode", "fresh"),
+        })
+    finally:
+        db.close()
 
 
 @admin_bp.route("/admin/api/models/versions/<int:version_id>/promote", methods=["POST"])
@@ -1253,3 +1651,96 @@ def mark_all_admin_notifications_read(admin_id):
     from services.notification_service import mark_all_read, unread_count
     updated = mark_all_read(admin_id)
     return jsonify({"message": f"Marked {updated} as read", "unread_count": unread_count(admin_id)})
+
+
+# ---------------------------------------------------------------------
+# ML Operations
+# ---------------------------------------------------------------------
+@admin_bp.route("/admin/api/ml/retrain-now", methods=["POST"])
+@admin_required
+def ml_retrain_now(admin_id):
+    from services.nightly_retrain import run_retrain
+    data = request.get_json(silent=True) or {}
+    pairs = data.get("pairs")
+    result = run_retrain(run_type="MANUAL", pairs=pairs)
+    log_admin_action(admin_id, "ml_retrain_now", "training_run", result.get("run_id"), result)
+    return jsonify(result)
+
+
+@admin_bp.route("/admin/api/ml/training-runs")
+@admin_required
+def ml_training_runs(admin_id):
+    from services.nightly_retrain import list_training_runs
+    limit = min(int(request.args.get("limit", 30)), 100)
+    return jsonify({"runs": list_training_runs(limit=limit)})
+
+
+@admin_bp.route("/admin/api/ml/model-versions")
+@admin_required
+def ml_model_versions(admin_id):
+    from services.ml_service import list_model_versions
+    symbol = request.args.get("symbol")
+    interval = request.args.get("interval")
+    return jsonify({"versions": list_model_versions(symbol, interval)})
+
+
+@admin_bp.route("/admin/api/ml/model-versions/<int:version_id>/activate", methods=["POST"])
+@admin_required
+def ml_activate_version(admin_id, version_id):
+    from services.ml_service import promote_version
+    ok = promote_version(version_id)
+    if not ok:
+        return jsonify({"error": "Version not found"}), 404
+    log_admin_action(admin_id, "ml_activate_version", "model_version", version_id, {})
+    return jsonify({"message": "Activated", "version_id": version_id})
+
+
+@admin_bp.route("/admin/api/ml/backtests")
+@admin_required
+def ml_backtests(admin_id):
+    from db.models import BacktestRun
+    db = SessionLocal()
+    try:
+        rows = db.query(BacktestRun).order_by(BacktestRun.id.desc()).limit(50).all()
+        return jsonify({"backtests": [
+            {
+                "id": r.id,
+                "model_version_id": r.model_version_id,
+                "symbol": r.symbol,
+                "interval": r.interval,
+                "win_rate": r.win_rate,
+                "precision": r.precision,
+                "f1": r.f1,
+                "brier_score": r.brier_score,
+                "passed_promotion_gate": r.passed_promotion_gate,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]})
+    finally:
+        db.close()
+
+
+@admin_bp.route("/admin/api/performance/pairs")
+@admin_required
+def performance_pairs(admin_id):
+    from services.pair_performance import list_pair_performance
+    return jsonify({"pairs": list_pair_performance()})
+
+
+@admin_bp.route("/admin/api/performance/timeframes")
+@admin_required
+def performance_timeframes(admin_id):
+    from services.pair_performance import list_pair_performance
+    rows = list_pair_performance()
+    by_tf: dict[str, list] = {}
+    for r in rows:
+        by_tf.setdefault(r["interval"], []).append(r)
+    return jsonify({"timeframes": by_tf})
+
+
+@admin_bp.route("/admin/api/ml/exports")
+@admin_required
+def ml_admin_exports(admin_id):
+    from services.export_service import list_export_jobs
+    return jsonify({"jobs": list_export_jobs(user_id=None, limit=50)})

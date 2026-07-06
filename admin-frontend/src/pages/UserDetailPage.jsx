@@ -7,6 +7,8 @@ import {
   formatMarketDirection,
   formatReviewStatus,
   formatTimestamp,
+  formatUserEmail,
+  isTelegramEmail,
 } from "../utils/formatters.js";
 
 export default function UserDetailPage() {
@@ -73,7 +75,12 @@ export default function UserDetailPage() {
       <PageAlerts error={error} notice={notice} onClearNotice={() => setNotice("")} />
 
       <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <InfoCard label="Email" value={u.email} />
+        <InfoCard
+          label="Email"
+          value={formatUserEmail(u)}
+          sub={isTelegramEmail(u) && u.email ? u.email : null}
+          href={!isTelegramEmail(u) && u.email ? `mailto:${u.email}` : null}
+        />
         <InfoCard label="Role" value={u.role} />
         <InfoCard label="Status" value={u.status || (u.is_active ? "active" : "pending")} />
         <InfoCard label="Telegram" value={detail.telegram?.linked ? `Linked (${detail.telegram.chat_id})` : "Not linked"} />
@@ -192,11 +199,18 @@ export default function UserDetailPage() {
   );
 }
 
-function InfoCard({ label, value }) {
+function InfoCard({ label, value, sub, href }) {
   return (
     <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-4">
       <p className="text-xs text-[#8b949e]">{label}</p>
-      <p className="font-medium">{value ?? "—"}</p>
+      {href ? (
+        <a href={href} className="break-all font-medium text-[#2f81f7] hover:underline">
+          {value ?? "—"}
+        </a>
+      ) : (
+        <p className="break-all font-medium">{value ?? "—"}</p>
+      )}
+      {sub && <p className="mt-1 break-all text-[10px] text-[#6e7681]">{sub}</p>}
     </div>
   );
 }

@@ -58,6 +58,9 @@ from admin_panel import admin_bp  # noqa: E402
 from user_panel import user_bp  # noqa: E402
 app.register_blueprint(admin_bp)
 app.register_blueprint(user_bp)
+
+from flask_sock import Sock  # noqa: E402
+sock = Sock(app)
 limiter.limit("10 per minute")(app.view_functions["admin.api_login"])
 limiter.limit("5 per minute")(app.view_functions["admin.api_forgot"])
 limiter.limit("5 per minute")(app.view_functions["admin.api_reset"])
@@ -561,6 +564,33 @@ def index():
 def list_pairs():
     return jsonify({"pairs": get_supported_pairs(), "interval": INTERVAL})
 
+
+@app.route("/calculator", methods=["POST"])
+@token_required
+def position_calculator(user_id):
+    """Automated pip / position-size calculator.
+
+    Body: {symbol, entry, stop_loss, take_profit, balance?, risk_pct?}
+    Free to call (no prediction quota) so clients can recalculate live.
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        symbol = normalize_symbol(data.get("symbol", ""))
+        from engine.risk_calc import pip_calculator
+        raw_amount = data.get("risk_amount")
+        calc = pip_calculator(
+            symbol,
+            float(data["entry"]),
+            float(data["stop_loss"]),
+            float(data["take_profit"]),
+            float(data.get("balance", 1000)),
+            float(data.get("risk_pct", 1.0)),
+            risk_amount=float(raw_amount) if raw_amount not in (None, "") else None,
+        )
+        return jsonify(calc)
+    except (KeyError, TypeError, ValueError) as exc:
+        return jsonify({"error": f"Invalid calculator input: {exc}"}), 400
+
 @app.route("/data", methods=["GET"])
 @approved_user_required
 def list_data_files(user_id):
@@ -609,7 +639,8 @@ def analyze(user_id):
     data = request.get_json(silent=True) or {}
     try:
         symbol = _extract_symbol(data)
-        interval = _parse_interval(data)
+        # None -> the pipeline's default multi-timeframe stack (4H/1H/30m)
+        interval = _parse_interval(data) if data.get("interval") else None
         strategy = _parse_strategy(data)
         horizon = _parse_horizon(data)
     except ValueError as exc:
@@ -623,9 +654,12 @@ def analyze(user_id):
     if not ok:
         return jsonify({"error": quota_msg}), 429
     fetch = bool(data.get("fetch", True))
+    mtf_flag = data.get("mtf")
     try:
         result = predict_symbol(
-            symbol, interval=interval, fetch=fetch, strategy_mode=strategy
+            symbol, interval=interval, fetch=fetch, strategy_mode=strategy,
+            mtf=bool(mtf_flag) if mtf_flag is not None else None,
+            trading_style=horizon,
         )
         decision = result.get("decision", {})
         from services.prediction_record import record_prediction_from_result
@@ -660,7 +694,8 @@ def predict_stream(user_id, account_id):
     data = request.get_json(silent=True) or {}
     try:
         symbol = _extract_symbol(data)
-        interval = _parse_interval(data)
+        # None -> the pipeline's default multi-timeframe stack (4H/1H/30m)
+        interval = _parse_interval(data) if data.get("interval") else None
         strategy = _parse_strategy(data)
         horizon = _parse_horizon(data)
     except ValueError as exc:
@@ -681,6 +716,8 @@ def predict_stream(user_id, account_id):
     if not ok:
         return jsonify({"error": err}), 429
 
+    mtf_flag = data.get("mtf")
+
     def event_stream():
         updates: list[str] = []
 
@@ -690,7 +727,9 @@ def predict_stream(user_id, account_id):
         try:
             yield f"data: [PREDICT] Starting prediction for {symbol} ({strategy})\n\n"
             result = predict_symbol(
-                symbol, interval=interval, strategy_mode=strategy, on_progress=on_progress
+                symbol, interval=interval, strategy_mode=strategy, on_progress=on_progress,
+                mtf=bool(mtf_flag) if mtf_flag is not None else None,
+                trading_style=horizon,
             )
             for u in updates:
                 yield u
@@ -766,6 +805,136 @@ def predict_stream(user_id, account_id):
             yield f"data: [ERROR] Exception occurred: {e}\n\n"
 
     return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
+
+
+# ---------------- ALERTS ----------------
+@app.route("/api/alerts/rules", methods=["GET"])
+@token_required
+def list_alert_rules(user_id):
+    from services.alert_scanner import list_rules
+    return jsonify({"rules": list_rules(user_id)})
+
+
+@app.route("/api/alerts/rules", methods=["POST"])
+@token_required
+def create_alert_rule(user_id):
+    data = request.get_json(silent=True) or {}
+    from services.alert_scanner import create_rule
+    row = create_rule(user_id, data)
+    if not row:
+        return jsonify({"error": "Failed to create rule"}), 500
+    return jsonify({"id": row.id, "message": "Rule created"}), 201
+
+
+@app.route("/api/alerts/rules/<int:rule_id>", methods=["PATCH"])
+@token_required
+def update_alert_rule(user_id, rule_id):
+    data = request.get_json(silent=True) or {}
+    from services.alert_scanner import update_rule
+    if not update_rule(rule_id, user_id, data):
+        return jsonify({"error": "Rule not found"}), 404
+    return jsonify({"message": "Updated"})
+
+
+@app.route("/api/alerts/rules/<int:rule_id>", methods=["DELETE"])
+@token_required
+def delete_alert_rule(user_id, rule_id):
+    from services.alert_scanner import delete_rule
+    if not delete_rule(rule_id, user_id):
+        return jsonify({"error": "Rule not found"}), 404
+    return jsonify({"message": "Deleted"})
+
+
+@app.route("/api/alerts/telegram/connect", methods=["POST"])
+@token_required
+def connect_telegram_alerts(user_id):
+    from db.models import TelegramLink
+    from services.telegram_link import create_link_code
+    data = request.get_json(silent=True) or {}
+    db = SessionLocal()
+    try:
+        link = db.query(TelegramLink).filter(TelegramLink.user_id == user_id).first()
+        if link:
+            return jsonify({"telegram_chat_id": link.chat_id, "linked": True})
+    finally:
+        db.close()
+    code = create_link_code(user_id)
+    return jsonify({
+        "linked": False,
+        "link_code": code,
+        "message": "Send this code to the Telegram bot to link your account.",
+    })
+
+
+# ---------------- EXPORTS ----------------
+@app.route("/api/exports/predictions", methods=["POST"])
+@token_required
+def create_predictions_export(user_id):
+    data = request.get_json(silent=True) or {}
+    from services.export_service import create_export_job
+    job = create_export_job(
+        user_id=user_id,
+        export_type=data.get("format", "CSV"),
+        scope=data.get("scope", "predictions"),
+    )
+    if not job:
+        return jsonify({"error": "Export failed"}), 500
+    return jsonify({"job_id": job.id, "status": job.status}), 202
+
+
+@app.route("/api/exports/<int:job_id>/download")
+@token_required
+def download_export(user_id, job_id):
+    token = request.args.get("token", "")
+    from services.export_service import get_download_path
+    from flask import send_file
+    path = get_download_path(job_id, user_id, token)
+    if not path:
+        return jsonify({"error": "Download unavailable or expired"}), 404
+    return send_file(path, as_attachment=True)
+
+
+@app.route("/api/exports", methods=["GET"])
+@token_required
+def list_exports(user_id):
+    from services.export_service import list_export_jobs
+    return jsonify({"jobs": list_export_jobs(user_id=user_id)})
+
+
+# ---------------- LIVE MARKET ----------------
+@app.route("/api/market/live/<pair>", methods=["GET"])
+def market_live(pair):
+    from services.oanda_stream import get_latest_quote
+    sym = normalize_symbol(pair)
+    quote = get_latest_quote(sym)
+    if not quote:
+        from services.oanda_stream import subscribe
+        subscribe(sym, lambda _: None)
+        quote = get_latest_quote(sym)
+    return jsonify({"pair": sym, "quote": quote})
+
+
+@sock.route("/api/market/stream/<pair>")
+def market_stream(ws, pair):
+    import json as _json
+    sym = normalize_symbol(pair)
+    from services.oanda_stream import subscribe, unsubscribe
+
+    def on_tick(tick):
+        try:
+            ws.send(_json.dumps(tick))
+        except Exception:
+            pass
+
+    subscribe(sym, on_tick)
+    try:
+        while True:
+            ws.receive(timeout=30)
+    except Exception:
+        pass
+    finally:
+        unsubscribe(sym, on_tick)
+
 
 # ---------------- RUN ----------------
 if __name__ == "__main__":

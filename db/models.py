@@ -34,6 +34,34 @@ class User(Base):
     accounts = relationship("Account", back_populates="user", cascade="all, delete-orphan")
 
 
+class PairThreshold(Base):
+    __tablename__ = 'pair_thresholds'
+    symbol = Column(String(16), primary_key=True)
+    interval = Column(String(16), primary_key=True, default='*')
+    thresholds_json = Column(Text, nullable=False, default='{}')
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ThresholdVersion(Base):
+    __tablename__ = 'threshold_versions'
+    id = Column(Integer, primary_key=True)
+    version_tag = Column(String(32), unique=True, nullable=False, index=True)
+    config_json = Column(Text, nullable=False)
+    is_active = Column(Boolean, default=False, nullable=False, index=True)
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    notes = Column(Text, nullable=True)
+
+
+class ThresholdOverride(Base):
+    __tablename__ = 'threshold_overrides'
+    symbol = Column(String(16), primary_key=True, default='*')
+    interval = Column(String(16), primary_key=True, default='*')
+    trading_style = Column(String(16), primary_key=True, default='*')
+    patch_json = Column(Text, nullable=False, default='{}')
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Setting(Base):
     __tablename__ = 'settings'
     key = Column(String(64), primary_key=True)
@@ -165,14 +193,157 @@ class ModelVersion(Base):
     id = Column(Integer, primary_key=True)
     symbol = Column(String(16), index=True, nullable=False)
     interval = Column(String(16), default='60min')
+    trading_style = Column(String(16), default='intraday', nullable=False)
+    model_type = Column(String(16), default='RANDOM_FOREST', nullable=False)
     path = Column(String(512), nullable=False)
+    calibrator_path = Column(String(512), nullable=True)
+    feature_schema_version = Column(String(16), default='v1')
+    threshold_version_id = Column(Integer, ForeignKey('threshold_versions.id', ondelete='SET NULL'), nullable=True)
+    rule_engine_version = Column(String(32), default='v1')
+    training_data_start = Column(DateTime, nullable=True)
+    training_data_end = Column(DateTime, nullable=True)
+    training_record_count = Column(Integer, default=0)
+    walk_forward_score = Column(Float, nullable=True)
+    precision = Column(Float, nullable=True)
+    recall = Column(Float, nullable=True)
+    f1 = Column(Float, nullable=True)
+    brier_score = Column(Float, nullable=True)
+    log_loss = Column(Float, nullable=True)
+    win_rate = Column(Float, nullable=True)
+    accepted_signal_count = Column(Integer, default=0)
+    rejected_signal_count = Column(Integer, default=0)
+    status = Column(String(16), default='CANDIDATE', nullable=False, index=True)
+    promoted_from_version_id = Column(Integer, ForeignKey('model_versions.id', ondelete='SET NULL'), nullable=True)
+    promoted_at = Column(DateTime, nullable=True)
     val_accuracy = Column(Float, default=0.0)
     samples = Column(Integer, default=0)
     is_active = Column(Boolean, default=False, nullable=False, index=True)
     metrics_json = Column(Text, nullable=True)
     trained_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
-    __table_args__ = (Index('ix_model_versions_pair', 'symbol', 'interval', 'is_active'),)
+    __table_args__ = (Index('ix_model_versions_pair', 'symbol', 'interval', 'trading_style', 'status'),)
+
+
+class TrainingRun(Base):
+    __tablename__ = 'training_runs'
+    id = Column(Integer, primary_key=True)
+    run_type = Column(String(16), default='NIGHTLY', nullable=False)
+    status = Column(String(16), default='QUEUED', nullable=False, index=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    error_message = Column(Text, nullable=True)
+    pairs_processed = Column(Integer, default=0)
+    models_created = Column(Integer, default=0)
+    models_promoted = Column(Integer, default=0)
+    metadata_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class BacktestRun(Base):
+    __tablename__ = 'backtest_runs'
+    id = Column(Integer, primary_key=True)
+    model_version_id = Column(Integer, ForeignKey('model_versions.id', ondelete='CASCADE'), nullable=False, index=True)
+    symbol = Column(String(16), nullable=False, index=True)
+    interval = Column(String(16), default='60min')
+    trading_style = Column(String(16), default='intraday')
+    start_date = Column(DateTime, nullable=True)
+    end_date = Column(DateTime, nullable=True)
+    walk_forward_windows = Column(Integer, default=0)
+    total_signals = Column(Integer, default=0)
+    accepted_signals = Column(Integer, default=0)
+    rejected_signals = Column(Integer, default=0)
+    win_rate = Column(Float, nullable=True)
+    precision = Column(Float, nullable=True)
+    recall = Column(Float, nullable=True)
+    f1 = Column(Float, nullable=True)
+    brier_score = Column(Float, nullable=True)
+    log_loss = Column(Float, nullable=True)
+    max_adverse_excursion_avg = Column(Float, nullable=True)
+    confidence_calibration_json = Column(Text, nullable=True)
+    passed_promotion_gate = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class SignalOutcome(Base):
+    __tablename__ = 'signal_outcomes'
+    id = Column(Integer, primary_key=True)
+    prediction_id = Column(Integer, ForeignKey('prediction_reviews.id', ondelete='CASCADE'), nullable=False, unique=True, index=True)
+    rule_direction = Column(String(16), nullable=False)
+    tp_price = Column(Float, nullable=True)
+    sl_price = Column(Float, nullable=True)
+    entry_price = Column(Float, nullable=False)
+    outcome = Column(String(24), nullable=False, index=True)
+    max_favorable_excursion = Column(Float, nullable=True)
+    max_adverse_excursion = Column(Float, nullable=True)
+    meta_label = Column(Integer, nullable=True)
+    verified_at = Column(DateTime, default=datetime.utcnow)
+
+    prediction = relationship("PredictionReview", back_populates="signal_outcome")
+
+
+class AlertRule(Base):
+    __tablename__ = 'alert_rules'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    channel = Column(String(16), default='TELEGRAM', nullable=False)
+    telegram_chat_id = Column(String(64), nullable=True)
+    pairs_json = Column(Text, nullable=False, default='[]')
+    min_confidence = Column(Float, default=0.6)
+    allowed_directions_json = Column(Text, nullable=False, default='["BUY_BIAS","SELL_BIAS"]')
+    timeframes_json = Column(Text, nullable=False, default='["60min"]')
+    trading_style = Column(String(16), default='intraday')
+    quiet_hours_json = Column(Text, nullable=True)
+    max_alerts_per_day = Column(Integer, default=10)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AlertEvent(Base):
+    __tablename__ = 'alert_events'
+    id = Column(Integer, primary_key=True)
+    alert_rule_id = Column(Integer, ForeignKey('alert_rules.id', ondelete='CASCADE'), nullable=False, index=True)
+    prediction_id = Column(Integer, ForeignKey('prediction_reviews.id', ondelete='SET NULL'), nullable=True, index=True)
+    sent_at = Column(DateTime, default=datetime.utcnow, index=True)
+    status = Column(String(16), default='SENT', nullable=False)
+    error_message = Column(Text, nullable=True)
+
+
+class ExportJob(Base):
+    __tablename__ = 'export_jobs'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=True, index=True)
+    export_type = Column(String(8), default='CSV', nullable=False)
+    scope = Column(String(32), default='predictions')
+    status = Column(String(16), default='QUEUED', nullable=False, index=True)
+    file_path = Column(String(512), nullable=True)
+    file_url = Column(String(512), nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    error_message = Column(Text, nullable=True)
+    metadata_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    completed_at = Column(DateTime, nullable=True)
+
+
+class PairPerformance(Base):
+    __tablename__ = 'pair_performance'
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String(16), nullable=False, index=True)
+    interval = Column(String(16), default='60min')
+    trading_style = Column(String(16), default='intraday')
+    model_version_id = Column(Integer, ForeignKey('model_versions.id', ondelete='SET NULL'), nullable=True)
+    total_signals = Column(Integer, default=0)
+    accepted_signals = Column(Integer, default=0)
+    rejected_signals = Column(Integer, default=0)
+    win_rate = Column(Float, nullable=True)
+    precision = Column(Float, nullable=True)
+    avg_confidence = Column(Float, nullable=True)
+    brier_score = Column(Float, nullable=True)
+    status_recommendation = Column(String(16), default='ACTIVE')
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint('symbol', 'interval', 'trading_style', name='uq_pair_perf'),)
 
 
 class PredictionReview(Base):
@@ -194,6 +365,14 @@ class PredictionReview(Base):
     signals_json = Column(Text, nullable=True)
     snapshot_path = Column(String(512), nullable=True)
     model_version = Column(String(64), nullable=True)
+    model_version_id = Column(Integer, ForeignKey('model_versions.id', ondelete='SET NULL'), nullable=True, index=True)
+    threshold_version_id = Column(Integer, ForeignKey('threshold_versions.id', ondelete='SET NULL'), nullable=True, index=True)
+    rule_engine_version = Column(String(32), default='v1')
+    feature_schema_version = Column(String(16), default='v1')
+    meta_ml_probability = Column(Float, nullable=True)
+    confidence_before_ml = Column(Float, nullable=True)
+    final_confidence = Column(Float, nullable=True)
+    trading_style = Column(String(16), default='intraday')
     strategy_mode = Column(String(16), default='both')
     retry_count = Column(Integer, default=0, nullable=False)
     predicted_at = Column(DateTime, default=datetime.utcnow)
@@ -212,6 +391,7 @@ class PredictionReview(Base):
     user_feedback = relationship("UserFeedback", back_populates="prediction", uselist=False, cascade="all, delete-orphan")
     market_verification = relationship("MarketVerification", back_populates="prediction", uselist=False, cascade="all, delete-orphan")
     training_record = relationship("TrainingRecord", back_populates="prediction", uselist=False, cascade="all, delete-orphan")
+    signal_outcome = relationship("SignalOutcome", back_populates="prediction", uselist=False, cascade="all, delete-orphan")
 
 
 class DetectedSignal(Base):

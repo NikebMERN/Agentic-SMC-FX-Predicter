@@ -1,0 +1,423 @@
+1. How SMC/ICT traders think from high timeframe to entry
+
+The core idea is:
+
+Higher timeframe = direction
+Middle timeframe = setup/story
+Lower timeframe = entry confirmation
+
+Many ICT resources describe the main concepts as liquidity, fair value gaps/imbalances, displacement, market structure shift, BOS, CHOCH, order blocks, daily bias, premium/discount, OTE, and killzones.
+
+Recommended AI timeframe breakdown
+| Timeframe      | Purpose              | What the AI should look for                                                                |
+| -------------- | -------------------- | ------------------------------------------------------------------------------------------ |
+| **Daily / 4H** | Main bias            | Major trend, key highs/lows, previous day/week high/low, premium/discount, major liquidity |
+| **2H / 1H**    | Market structure     | BOS, CHOCH, trend continuation, trend reversal, clean displacement                         |
+| **1H / 30M**   | Setup zone           | FVG, order block, liquidity sweep, support/resistance liquidity zones                      |
+| **15M / 5M**   | Confirmation         | MSS, retracement into FVG/OB, rejection candle, clean invalidation                         |
+| **3M / 1M**    | Optional scalp entry | Only for tight ICT scalping models; more noise, so lower confidence                        |
+
+Your example is close, but I would improve it like this:
+
+4H: find the main dealing range, liquidity, premium/discount, major support/resistance.
+1H: identify trend, BOS/CHOCH, and whether price is moving toward buy-side or sell-side liquidity.
+30M/15M: find FVG, order block, liquidity sweep, and displacement.
+5M/3M/1M: wait for entry confirmation, not just “deadline.” The “deadline” is usually a session window or killzone, not a reason to enter by itself.
+
+ICT’s Silver Bullet model, for example, is described as a time-based setup using liquidity and FVGs, with common one-hour windows around London open, New York AM, and New York PM in New York local time. The same source describes using the 15-minute chart for liquidity/bias and 1-minute or 3-minute charts for execution.
+
+2. Buy assumption logic
+
+A strong BUY_BIAS should not come from one sign only. It should come from a story like this:
+
+4H/Daily bias: price is bullish or price is in discount inside a larger range.
+Liquidity event: price sweeps sell-side liquidity below a previous low.
+Rejection: price closes back above the swept low.
+Structure shift: on 1H/30M/15M, price creates bullish CHOCH or MSS.
+Displacement: bullish candle moves strongly upward and creates an FVG.
+Entry zone: price retraces into bullish FVG or bullish order block.
+Invalidation: stop/invalidation is below the swept low or order block low.
+Target: next buy-side liquidity, equal highs, previous high, or previous day high.
+
+The AI output should be:
+
+BUY_BIAS — confidence 68% — invalid if price closes below X — target liquidity near Y
+
+Not:
+
+“Buy now, guaranteed.”
+
+3. Sell assumption logic
+
+A strong SELL_BIAS is the opposite:
+
+4H/Daily bias: price is bearish or price is in premium inside a larger range.
+Liquidity event: price sweeps buy-side liquidity above previous high/equal highs.
+Rejection: price closes back below the swept high.
+Structure shift: on 1H/30M/15M, price creates bearish CHOCH or MSS.
+Displacement: bearish candle moves strongly downward and creates an FVG.
+Entry zone: price retraces into bearish FVG or bearish order block.
+Invalidation: above swept high or order block high.
+Target: sell-side liquidity, equal lows, previous low, or previous day low.
+
+The AI output should be:
+
+SELL_BIAS — confidence 71% — invalid if price closes above X — target liquidity near Y
+
+4. When the AI should say NO TRADE
+
+This is very important. A good trading AI must refuse bad setups.
+
+Return NO_TRADE when:
+| Problem                             | Why it matters              |
+| ----------------------------------- | --------------------------- |
+| 4H says bullish but 1H says bearish | Timeframes conflict         |
+| No liquidity sweep                  | No clear smart-money story  |
+| FVG is too small                    | Could just be spread/noise  |
+| No candle close confirmation        | Wick-only breaks are weak   |
+| Price is in middle of range         | Bad risk/reward             |
+| Spread is high                      | Entry may be unreliable     |
+| No invalidation level               | Risk cannot be defined      |
+| Major news period                   | Technical patterns may fail |
+| Confidence below threshold          | Model is not sure enough    |
+
+5. Best structure for your SMC/ICT AI
+
+Your AI should work like this:
+
+User selects pair
+↓
+Fetch OANDA candles
+↓
+Analyze Daily/4H bias
+↓
+Analyze 1H structure
+↓
+Analyze 30M/15M setup
+↓
+Analyze 5M confirmation
+↓
+Score SMC signals
+↓
+Score ICT signals
+↓
+Apply risk filters
+↓
+Return BUY_BIAS / SELL_BIAS / WAIT / NO_TRADE
+↓
+After prediction horizon, verify actual market movement using OANDA
+↓
+Compare AI prediction vs real price movement
+↓
+Compare user feedback vs market result
+↓
+Store training record for admin review
+
+OANDA candle data can support this because its instrument/candlestick model includes candle time, bid/ask/mid candle data, volume, completion status, and OHLC price data.
+
+What “threshold” means?
+
+ - A threshold is the minimum required amount before the AI accepts something as valid.
+
+=> Simple meaning:
+
+    “Do not count this as a real signal unless it passes this minimum level.”
+
+Examples:
+| Threshold                       | Meaning                                                                    |
+| ------------------------------- | -------------------------------------------------------------------------- |
+| `minBosBreakPips = 2`           | A BOS is valid only if price closes at least 2 pips beyond the swing level |
+| `minFvgSizePips = 1.5`          | Ignore FVGs smaller than 1.5 pips because they may be noise                |
+| `maxSpreadPips = 2`             | If spread is above 2 pips, do not enter or reduce confidence               |
+| `minConfidenceForBias = 0.60`   | AI must be at least 60% confident before giving BUY/SELL bias              |
+| `minRiskReward = 2.0`           | Potential reward must be at least 2 times the risk                         |
+| `equalHighLowTolerancePips = 3` | Two highs can be considered “equal highs” if they are within 3 pips        |
+
+
+SMC/ICT AI Threshold Table
+
+1. Global market-data thresholds
+
+| Threshold Key               | Default | Min |  Max | Meaning / Use                                                    |
+| --------------------------- | ------: | --: | ---: | ---------------------------------------------------------------- |
+| `minCandlesRequired`        |     200 | 100 | 1000 | Minimum candles needed before analysis                           |
+| `preferredCandlesRequired`  |     500 | 200 | 2000 | Better candle history for stronger analysis                      |
+| `useOnlyCompletedCandles`   |  `true` |   - |    - | Never analyze unfinished candles for BOS/CHOCH/FVG               |
+| `staleCandleMaxMinutes_M1`  |       3 |   1 |   10 | M1 data is invalid if latest completed candle is older than this |
+| `staleCandleMaxMinutes_M5`  |      10 |   3 |   20 | M5 stale-data limit                                              |
+| `staleCandleMaxMinutes_M15` |      25 |  10 |   45 | M15 stale-data limit                                             |
+| `staleCandleMaxMinutes_M30` |      45 |  20 |   90 | M30 stale-data limit                                             |
+| `staleCandleMaxMinutes_H1`  |      90 |  60 |  180 | H1 stale-data limit                                              |
+| `maxMissingCandlesPercent`  |     1.0 |   0 |    5 | Reject analysis if too many candles missing                      |
+| `maxDuplicateCandles`       |       0 |   0 |    3 | Duplicate timestamps allowed before rejecting                    |
+| `minDataQualityScore`       |      90 |  70 |  100 | Overall candle-data quality score required                       |
+
+2. Pip and spread thresholds
+
+| Threshold Key                       | Default | Min | Max | Meaning / Use                           |
+| ----------------------------------- | ------: | --: | --: | --------------------------------------- |
+| `pipSize_default`                   |  0.0001 |   - |   - | Most forex pairs                        |
+| `pipSize_jpyPairs`                  |    0.01 |   - |   - | JPY pairs like USD/JPY                  |
+| `maxSpreadPips_majorPairs`          |     2.0 | 0.5 |   5 | Max spread allowed for major pairs      |
+| `maxSpreadPips_minorPairs`          |     3.5 |   1 |   8 | Max spread allowed for crosses          |
+| `maxSpreadPips_exoticPairs`         |     8.0 |   3 |  25 | Max spread allowed for exotic pairs     |
+| `spreadWarningPips_majorPairs`      |     1.5 | 0.5 |   4 | Reduce confidence above this            |
+| `spreadConfidencePenalty`           |      10 |   0 |  30 | Points removed when spread is high      |
+| `abnormalSpreadMultiplier`          |     2.5 | 1.5 |   5 | Reject if spread is 2.5x recent average |
+| `minMoveMustExceedSpreadMultiplier` |     3.0 | 1.5 |   6 | Signal move must be at least 3x spread  |
+
+3. ATR / volatility thresholds
+
+ATR means Average True Range. It measures how much price normally moves.
+
+| Threshold Key                     | Default | Min | Max | Meaning / Use                                                      |
+| --------------------------------- | ------: | --: | --: | ------------------------------------------------------------------ |
+| `atrPeriod`                       |      14 |   7 |  50 | Standard ATR lookback                                              |
+| `minAtrPips_M5`                   |       3 |   1 |  15 | Avoid M5 trading if volatility too low                             |
+| `minAtrPips_M15`                  |       5 |   2 |  25 | Minimum M15 movement                                               |
+| `minAtrPips_H1`                   |      10 |   5 |  50 | Minimum H1 movement                                                |
+| `maxAtrSpikeMultiplier`           |     2.5 | 1.5 |   5 | Reject if current ATR is too abnormal                              |
+| `lowVolatilityPenalty`            |      10 |   0 |  30 | Confidence penalty during dead market                              |
+| `highVolatilityPenalty`           |      15 |   0 |  40 | Confidence penalty during abnormal spikes                          |
+| `displacementAtrMultiplier`       |     1.2 | 0.8 |   3 | Candle body must be 1.2x average body/ATR to count as displacement |
+| `strongDisplacementAtrMultiplier` |     1.8 | 1.2 |   4 | Strong displacement threshold                                      |
+
+4. Swing high / swing low thresholds
+
+| Threshold Key                     | Default | Min | Max | Meaning / Use                                 |
+| --------------------------------- | ------: | --: | --: | --------------------------------------------- |
+| `swingLookbackLeft`               |       3 |   2 |  10 | Candles to the left of swing point            |
+| `swingLookbackRight`              |       3 |   2 |  10 | Candles to the right of swing point           |
+| `majorSwingLookbackLeft`          |       5 |   3 |  20 | Higher timeframe major swing                  |
+| `majorSwingLookbackRight`         |       5 |   3 |  20 | Higher timeframe major swing confirmation     |
+| `minSwingDistancePips_major`      |      10 |   3 |  50 | Minimum distance between major swings         |
+| `minSwingDistancePips_minor`      |       4 |   1 |  20 | Minimum distance between minor swings         |
+| `minSwingDistanceAtrMultiplier`   |    0.25 | 0.1 |   1 | Swing distance must be meaningful vs ATR      |
+| `maxSwingAgeCandles`              |     150 |  30 | 500 | Ignore very old swing levels                  |
+| `equalHighLowTolerancePips_major` |       3 |   1 |  10 | Equal highs/lows tolerance on majors          |
+| `equalHighLowTolerancePips_jpy`   |       3 |   1 |  15 | Same idea for JPY pairs, in JPY pips          |
+| `equalHighLowMinTouches`          |       2 |   2 |   5 | Number of touches needed for equal highs/lows |
+
+5. BOS thresholds
+
+BOS = Break of Structure.
+
+| Threshold Key              | Default |  Min | Max | Meaning / Use                                                           |
+| -------------------------- | ------: | ---: | --: | ----------------------------------------------------------------------- |
+| `minBosBreakPips_M5`       |       2 |    1 |   8 | M5 close must break swing by this many pips                             |
+| `minBosBreakPips_M15`      |       3 |    1 |  12 | M15 BOS break                                                           |
+| `minBosBreakPips_H1`       |       5 |    2 |  25 | H1 BOS break                                                            |
+| `minBosBreakAtrMultiplier` |    0.10 | 0.05 | 0.5 | Break must also exceed ATR fraction                                     |
+| `bosRequiresCandleClose`   |  `true` |    - |   - | Wick-only BOS is invalid                                                |
+| `bosMaxReclaimCandles`     |       3 |    1 |   6 | If price reclaims broken level within this window, mark weak/failed BOS |
+| `bosDisplacementRequired`  |  `true` |    - |   - | Strong BOS should have displacement                                     |
+| `bosConfidenceBase`        |      15 |    5 |  30 | Score points added for valid BOS                                        |
+| `bosAgainstHtfPenalty`     |      15 |    5 |  40 | Penalty if BOS conflicts with higher timeframe                          |
+| `bosWickOnlyPenalty`       |     100 |    - |   - | Force invalid if wick-only                                              |
+
+6. CHOCH / MSS thresholds
+
+CHOCH = Change of Character.
+MSS = Market Structure Shift.
+
+| Threshold Key                      | Default | Min | Max | Meaning / Use                               |
+| ---------------------------------- | ------: | --: | --: | ------------------------------------------- |
+| `minChochBreakPips_M5`             |     1.5 | 0.5 |   6 | M5 CHOCH minimum break                      |
+| `minChochBreakPips_M15`            |     2.5 |   1 |  10 | M15 CHOCH minimum break                     |
+| `minChochBreakPips_H1`             |       4 |   2 |  20 | H1 CHOCH minimum break                      |
+| `chochRequiresPriorTrend`          |  `true` |   - |   - | Cannot have CHOCH without previous trend    |
+| `chochRequiresClose`               |  `true` |   - |   - | Wick-only CHOCH invalid                     |
+| `chochNeedsDisplacement`           |  `true` |   - |   - | Strong CHOCH needs displacement             |
+| `mssMustFollowLiquiditySweep`      |  `true` |   - |   - | ICT-style MSS should follow liquidity event |
+| `maxCandlesBetweenSweepAndMss_M5`  |      12 |   3 |  30 | MSS must happen soon after sweep            |
+| `maxCandlesBetweenSweepAndMss_M15` |       8 |   2 |  20 | M15 sweep-to-MSS window                     |
+| `chochConfidenceBase`              |      15 |   5 |  30 | Score for valid CHOCH                       |
+| `mssConfidenceBase`                |      20 |   5 |  35 | Score for valid ICT MSS                     |
+| `chochWithoutSweepPenalty`         |       8 |   0 |  25 | Reduce confidence if no liquidity sweep     |
+
+7. Liquidity sweep / raid thresholds
+
+| Threshold Key                   | Default |  Min |  Max | Meaning / Use                                       |
+| ------------------------------- | ------: | ---: | ---: | --------------------------------------------------- |
+| `minSweepDepthPips_major`       |       2 |  0.5 |   10 | Price must pierce liquidity by at least this        |
+| `minSweepDepthPips_jpy`         |       2 |  0.5 |   15 | JPY pip sweep depth                                 |
+| `minSweepDepthAtrMultiplier`    |    0.08 | 0.03 |  0.4 | Sweep must be meaningful vs ATR                     |
+| `sweepRequiresCloseBackInside`  |  `true` |    - |    - | Valid sweep must reject back inside level           |
+| `maxSweepRejectionCandles`      |       3 |    1 |    8 | Rejection must happen quickly                       |
+| `sweepBodyCloseStrengthPercent` |      50 |   30 |   80 | Candle should close away from sweep, not indecisive |
+| `liquidityLevelMaxAgeCandles`   |     200 |   30 | 1000 | Ignore too-old liquidity levels                     |
+| `previousDayHighLowWeight`      |      15 |    5 |   30 | Score weight for PDH/PDL sweep                      |
+| `previousWeekHighLowWeight`     |      20 |    5 |   35 | Score weight for PWH/PWL sweep                      |
+| `equalHighLowSweepWeight`       |      12 |    5 |   25 | Score for equal highs/lows sweep                    |
+| `failedSweepPenalty`            |      20 |    5 |   50 | Penalty if sweep continues as breakout              |
+
+8. Fair Value Gap thresholds
+
+FVG = Fair Value Gap.
+
+| Threshold Key               | Default |  Min | Max | Meaning / Use                                         |
+| --------------------------- | ------: | ---: | --: | ----------------------------------------------------- |
+| `minFvgSizePips_M5`         |     1.5 |  0.5 |   6 | Minimum M5 FVG size                                   |
+| `minFvgSizePips_M15`        |     2.5 |    1 |  10 | Minimum M15 FVG size                                  |
+| `minFvgSizePips_H1`         |       5 |    2 |  25 | Minimum H1 FVG size                                   |
+| `minFvgSizeAtrMultiplier`   |    0.08 | 0.03 | 0.4 | FVG must be meaningful vs ATR                         |
+| `fvgRequiresDisplacement`   |  `true` |    - |   - | FVG valid only if caused by displacement              |
+| `maxFvgFillPercentForValid` |      50 |    0 |  90 | If FVG is more than 50% filled, reduce validity       |
+| `fvgFullyFilledInvalid`     |  `true` |    - |   - | Fully filled FVG is invalid                           |
+| `fvgMaxAgeCandles_M5`       |      50 |   10 | 200 | Ignore old M5 FVG                                     |
+| `fvgMaxAgeCandles_M15`      |      40 |   10 | 150 | Ignore old M15 FVG                                    |
+| `fvgMaxAgeCandles_H1`       |      30 |    5 | 100 | Ignore old H1 FVG                                     |
+| `fvgEntryInsidePercentMin`  |      25 |    0 |  50 | Entry valid when price retraces at least 25% into FVG |
+| `fvgEntryInsidePercentMax`  |      75 |   50 | 100 | Prefer entry before too deep fill                     |
+| `fvgConfidenceBase`         |      10 |    3 |  25 | Score for valid FVG                                   |
+
+9. Order block thresholds
+
+| Threshold Key                    | Default | Min | Max | Meaning / Use                                |
+| -------------------------------- | ------: | --: | --: | -------------------------------------------- |
+| `obRequiresDisplacement`         |  `true` |   - |   - | OB must cause strong move                    |
+| `obRequiresStructureBreak`       |  `true` |   - |   - | OB must lead to BOS/CHOCH/MSS                |
+| `maxOrderBlockSizeAtrMultiplier` |     1.2 | 0.5 |   3 | Reject OB if zone too wide                   |
+| `maxOrderBlockSizePips_major`    |      20 |   5 |  80 | Max OB size for major pairs                  |
+| `maxOrderBlockSizePips_jpy`      |      20 |   5 | 100 | Max OB size for JPY pairs                    |
+| `maxObMitigationsAllowed`        |       2 |   0 |   5 | Too many retests weakens OB                  |
+| `obInvalidCloseBeyondPercent`    |     100 |  50 | 150 | Invalid when candle closes fully beyond zone |
+| `obMaxAgeCandles_M15`            |      50 |  10 | 200 | Ignore old M15 OBs                           |
+| `obMaxAgeCandles_H1`             |      40 |  10 | 150 | Ignore old H1 OBs                            |
+| `obConfidenceBase`               |      10 |   3 |  25 | Score for valid OB                           |
+| `freshObBonus`                   |       5 |   0 |  15 | Bonus for first mitigation                   |
+| `overMitigatedObPenalty`         |      15 |   5 |  40 | Penalty for overused OB                      |
+
+10. Premium / discount thresholds
+
+| Threshold Key                   | Default | Min | Max | Meaning / Use                                     |
+| ------------------------------- | ------: | --: | --: | ------------------------------------------------- |
+| `premiumStartPercent`           |      50 |  50 |  70 | Above this is premium                             |
+| `discountEndPercent`            |      50 |  30 |  50 | Below this is discount                            |
+| `deepPremiumPercent`            |      70 |  60 |  90 | Stronger sell area                                |
+| `deepDiscountPercent`           |      30 |  10 |  40 | Stronger buy area                                 |
+| `equilibriumZoneLowPercent`     |      45 |  40 |  49 | Middle range lower bound                          |
+| `equilibriumZoneHighPercent`    |      55 |  51 |  60 | Middle range upper bound                          |
+| `avoidEquilibriumEntries`       |  `true` |   - |   - | Avoid entries in middle 45–55%                    |
+| `premiumDiscountConfidenceBase` |      10 |   3 |  20 | Score when direction aligns with zone             |
+| `wrongPdZonePenalty`            |      15 |   5 |  40 | Penalize buying in premium or selling in discount |
+| `pdAloneCannotSignal`           |  `true` |   - |   - | Premium/discount alone cannot create signal       |
+
+11. Breakout / failed-breakout thresholds
+
+| Threshold Key                     | Default | Min | Max | Meaning / Use                                       |
+| --------------------------------- | ------: | --: | --: | --------------------------------------------------- |
+| `breakoutRequiresClose`           |  `true` |   - |   - | Wick breakout invalid                               |
+| `minBreakoutPips_M15`             |       3 |   1 |  12 | Minimum breakout size                               |
+| `breakoutRetestMaxCandles`        |      10 |   3 |  30 | Retest must happen within this window               |
+| `failedBreakoutReclaimCandles`    |       3 |   1 |   8 | If level is reclaimed quickly, mark failed breakout |
+| `failedBreakoutReversalScore`     |      12 |   5 |  30 | Score added for valid trap/reversal                 |
+| `breakoutWithNoRetestPenalty`     |       8 |   0 |  25 | Reduce confidence if no retest                      |
+| `breakoutAgainstLiquidityPenalty` |      15 |   5 |  40 | Penalty if breakout runs into major liquidity       |
+
+12. Session / killzone thresholds
+
+Use these in New York time, not the user’s local time.
+
+| Threshold Key              | Default | Meaning / Use                                |
+| -------------------------- | ------: | -------------------------------------------- |
+| `asianSessionStartNY`      | `18:00` | Start of Asian session                       |
+| `asianSessionEndNY`        | `00:00` | End of Asian session                         |
+| `londonKillzoneStartNY`    | `02:00` | London window start                          |
+| `londonKillzoneEndNY`      | `05:00` | London window end                            |
+| `nyAmKillzoneStartNY`      | `07:00` | New York AM window start                     |
+| `nyAmKillzoneEndNY`        | `10:00` | New York AM window end                       |
+| `nyPmKillzoneStartNY`      | `13:00` | New York PM window start                     |
+| `nyPmKillzoneEndNY`        | `15:00` | New York PM window end                       |
+| `sessionBonusLondon`       |       5 | Add confidence during London if setup valid  |
+| `sessionBonusNyAm`         |       7 | Add confidence during NY AM if setup valid   |
+| `sessionBonusNyPm`         |       4 | Add confidence during NY PM if setup valid   |
+| `deadSessionPenalty`       |      10 | Reduce confidence during low-liquidity times |
+| `sessionAloneCannotSignal` |  `true` | Time window cannot create trade by itself    |
+
+13. Risk/reward and invalidation thresholds
+
+| Threshold Key                  | Default | Min | Max | Meaning / Use                                 |
+| ------------------------------ | ------: | --: | --: | --------------------------------------------- |
+| `minRiskRewardScalp`           |     1.5 |   1 |   3 | Minimum RR for scalping                       |
+| `minRiskRewardIntraday`        |     2.0 | 1.5 |   4 | Minimum RR for intraday                       |
+| `minRiskRewardSwing`           |     2.5 | 1.5 |   5 | Minimum RR for swing                          |
+| `maxStopDistanceAtrMultiplier` |     1.5 | 0.5 |   4 | Stop/invalidation cannot be too far           |
+| `minStopDistancePips_major`    |       3 |   1 |  10 | Avoid invalidation too tight                  |
+| `minStopDistancePips_jpy`      |       3 |   1 |  15 | JPY minimum stop                              |
+| `targetMustBeLiquidity`        |  `true` |   - |   - | Target should be liquidity, not random number |
+| `noInvalidationForceNoTrade`   |  `true` |   - |   - | No invalidation = no trade                    |
+| `noTargetForceNoTrade`         |  `true` |   - |   - | No target liquidity = no trade                |
+| `maxRiskScoreAllowed`          |      60 |  30 |  90 | Above this, force NO_TRADE                    |
+
+14. Confidence and final decision thresholds
+
+| Threshold Key                       | Default | Meaning / Use                                    |
+| ----------------------------------- | ------: | ------------------------------------------------ |
+| `scoreNoTradeBelow`                 |      50 | Score below 50 = NO_TRADE                        |
+| `scoreWaitBelow`                    |      60 | 50–59 = WAIT_FOR_CONFIRMATION                    |
+| `scoreBiasMinimum`                  |      60 | 60+ can produce BUY/SELL bias                    |
+| `scoreStrongBiasMinimum`            |      75 | 75+ strong bias                                  |
+| `minConfidenceForBias`              |    0.60 | Minimum confidence for BUY/SELL                  |
+| `minConfidenceForStrongBias`        |    0.75 | Strong signal confidence                         |
+| `maxConfidenceCapWithoutBacktest`   |    0.75 | Do not show over 75% confidence until backtested |
+| `conflictPenaltyMinor`              |      10 | Small timeframe conflict                         |
+| `conflictPenaltyMajor`              |      25 | Major HTF conflict                               |
+| `forceNoTradeOnStrongConflict`      |  `true` | Strong conflict = NO_TRADE                       |
+| `waitForConfirmationIfEntryMissing` |  `true` | Setup valid but entry missing = WAIT             |
+
+15. News and event-risk thresholds
+
+| Threshold Key                | Default | Min | Max | Meaning / Use                      |
+| ---------------------------- | ------: | --: | --: | ---------------------------------- |
+| `avoidHighImpactNews`        |  `true` |   - |   - | Avoid high-impact news windows     |
+| `newsBlockBeforeMinutes`     |      30 |   5 | 120 | Block signals before news          |
+| `newsBlockAfterMinutes`      |      30 |   5 | 180 | Block signals after news           |
+| `mediumNewsPenalty`          |      10 |   0 |  30 | Reduce confidence near medium news |
+| `highNewsForceNoTrade`       |  `true` |   - |   - | High-impact news forces NO_TRADE   |
+| `unknownNewsCalendarPenalty` |       5 |   0 |  20 | Penalize if news data unavailable  |
+
+16. Prediction verification thresholds
+
+| Threshold Key                         | Default | Min | Max | Meaning / Use                                                |
+| ------------------------------------- | ------: | --: | --: | ------------------------------------------------------------ |
+| `minMoveForUpDownPips_M5`             |       5 |   2 |  20 | Market must move this much to label UP/DOWN                  |
+| `minMoveForUpDownPips_M15`            |       8 |   3 |  30 | M15 verification move                                        |
+| `minMoveForUpDownPips_H1`             |      15 |   5 |  60 | H1 verification move                                         |
+| `sidewaysThresholdPips_M15`           |       5 |   1 |  20 | Movement under this = SIDEWAYS                               |
+| `sidewaysThresholdAtrMultiplier`      |    0.25 | 0.1 | 0.6 | ATR-based sideways detection                                 |
+| `targetHitBeforeInvalidationRequired` |  `true` |   - |   - | Correct only if target direction happens before invalidation |
+| `maxVerificationDelayMinutes`         |      10 |   1 |  60 | Max delay after horizon closes                               |
+| `mfeMaeTracking`                      |  `true` |   - |   - | Track max favorable/adverse movement                         |
+| `noTradeNotCountedAsLoss`             |  `true` |   - |   - | NO_TRADE is separate category                                |
+| `waitNotCountedAsLoss`                |  `true` |   - |   - | WAIT is separate category                                    |
+
+17. User feedback and training thresholds
+
+| Threshold Key                      | Default | Min |  Max | Meaning / Use                                 |
+| ---------------------------------- | ------: | --: | ---: | --------------------------------------------- |
+| `userFeedbackWeight`               |    0.25 |   0 |  0.5 | User feedback is secondary                    |
+| `marketVerificationWeight`         |    0.75 | 0.5 |    1 | Market data is primary truth                  |
+| `conflictRequiresAdminReview`      |  `true` |   - |    - | User feedback vs market conflict needs review |
+| `minTrainingLabelQuality`          |    0.80 | 0.5 |    1 | Only high-quality labels train model          |
+| `autoApproveCleanRecords`          | `false` |   - |    - | Safer to require admin approval               |
+| `minPredictionsBeforeModelStats`   |     100 |  30 | 1000 | Don’t trust accuracy stats before this        |
+| `minPredictionsBeforePairStats`    |      50 |  20 |  500 | Pair-specific performance minimum             |
+| `maxUserFeedbackDelayHours`        |      72 |   1 |  168 | Late feedback gets lower weight               |
+| `lateFeedbackPenalty`              |    0.20 |   0 |  0.8 | Reduce late feedback quality                  |
+| `adminApprovalRequiredForTraining` |  `true` |   - |    - | Do not train from raw user feedback           |
+
+18. Per-trading-style threshold presets
+
+| Setting                    |  Scalping |   Intraday |      Swing |
+| -------------------------- | --------: | ---------: | ---------: |
+| Parent Timeframes          |     H1/H4 |      H4/H1 |      D1/H4 |
+| Setup Timeframes           |    M15/M5 |    M30/M15 |     H1/M30 |
+| Entry Timeframes           |  M5/M3/M1 |     M5/M15 |    M15/M30 |
+| `minConfidenceForBias`     |      0.65 |       0.60 |       0.60 |
+| `minRiskReward`            |       1.5 |        2.0 |        2.5 |
+| `maxSpreadPips_majorPairs` |       1.5 |        2.0 |        3.0 |
+| `minMoveForVerification`   |    5 pips | 10–15 pips | 30–80 pips |
+| `maxSetupAgeCandles`       |        30 |         60 |        120 |
+| News Sensitivity           | Very high |       High |     Medium |
+| Noise Penalty              |      High |     Medium |      Lower |

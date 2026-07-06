@@ -10,6 +10,8 @@ import TradesPage from "./pages/TradesPage.jsx";
 import ModelsPage from "./pages/ModelsPage.jsx";
 import PredictPage from "./pages/PredictPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
+import ThresholdsPage from "./pages/ThresholdsPage.jsx";
+import MLOpsPage from "./pages/MLOpsPage.jsx";
 import LogsPage from "./pages/LogsPage.jsx";
 import ReviewsPage from "./pages/ReviewsPage.jsx";
 import TrainingRecordsPage from "./pages/TrainingRecordsPage.jsx";
@@ -31,6 +33,8 @@ export default function App() {
           <Route path="/training-records" element={<TrainingRecordsPage />} />
           <Route path="/predict" element={<PredictPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/thresholds" element={<ThresholdsPage />} />
+          <Route path="/ml-ops" element={<MLOpsPage />} />
           <Route path="/logs" element={<LogsPage />} />
           <Route path="/audit" element={<AuditPage />} />
         </Route>

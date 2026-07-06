@@ -101,6 +101,11 @@ def run_cycle():
     if evaluated:
         log.info("Evaluated %d prediction review(s) (2h market check)", evaluated)
 
+    from services.signal_outcome import verify_due_outcomes
+    outcomes = verify_due_outcomes()
+    if outcomes:
+        log.info("Verified %d signal outcome(s)", outcomes)
+
 
 def _loop():
     global _running

@@ -150,8 +150,11 @@ def test_user_detail_and_history(client, admin_token):
 
     detail = client.get(f"/admin/api/users/{uid}", headers=auth(admin_token))
     assert detail.status_code == 200
-    assert detail.get_json()["user"]["id"] == uid
-    assert "counts" in detail.get_json()
+    body = detail.get_json()
+    assert body["user"]["id"] == uid
+    assert "email" in body["user"]
+    assert "email_display" in body["user"]
+    assert "counts" in body
 
     hist = client.get(f"/admin/api/users/{uid}/history", headers=auth(admin_token))
     assert hist.status_code == 200

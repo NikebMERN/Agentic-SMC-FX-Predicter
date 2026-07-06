@@ -61,6 +61,7 @@ def detect_structure(
     window: int = 3,
     atr_series: pd.Series | None = None,
     displacement_mult: float = 1.2,
+    min_break_abs: float = 0.0,
 ) -> dict:
     """Walk the candles chronologically tracking structure state.
 
@@ -104,12 +105,13 @@ def detect_structure(
             and body > displacement_mult * atr_np[i]
         )
 
-        if ref_high is not None and close > ref_high["price"]:
+        if ref_high is not None and close > ref_high["price"] + min_break_abs:
             origin = confirmed_lows[-1] if confirmed_lows else None
+            kind = "BOS" if trend >= 0 else "CHoCH"
             events.append({
                 "pos": i,
                 "time": df.index[i],
-                "kind": "BOS" if trend >= 0 else "CHoCH",
+                "kind": kind,
                 "direction": "bullish",
                 "level": ref_high["price"],
                 "displacement": displaced,
@@ -118,12 +120,13 @@ def detect_structure(
             })
             trend = 1
             ref_high = None  # wait for the next confirmed swing high
-        elif ref_low is not None and close < ref_low["price"]:
+        elif ref_low is not None and close < ref_low["price"] - min_break_abs:
             origin = confirmed_highs[-1] if confirmed_highs else None
+            kind = "BOS" if trend <= 0 else "CHoCH"
             events.append({
                 "pos": i,
                 "time": df.index[i],
-                "kind": "BOS" if trend <= 0 else "CHoCH",
+                "kind": kind,
                 "direction": "bearish",
                 "level": ref_low["price"],
                 "displacement": displaced,
@@ -134,6 +137,30 @@ def detect_structure(
             ref_low = None
 
     return {"events": events, "trend": trend}
+
+
+def detect_mss(
+    structure_events: list[dict],
+    sweeps: list[dict],
+) -> list[dict]:
+    """Market Structure Shift — structural reversal after liquidity sweep."""
+    if not structure_events or not sweeps:
+        return []
+    mss_events: list[dict] = []
+    for sweep in sweeps:
+        sweep_pos = sweep["pos"]
+        for ev in structure_events:
+            if ev["pos"] <= sweep_pos:
+                continue
+            if ev["kind"] == "CHoCH":
+                expected = "bullish" if sweep["bias"] == "bullish" else "bearish"
+                if ev["direction"] == expected:
+                    tagged = dict(ev)
+                    tagged["kind"] = "MSS"
+                    tagged["sweep_level"] = sweep.get("level")
+                    mss_events.append(tagged)
+                    break
+    return mss_events
 
 
 # --------------------------------------------------------------------

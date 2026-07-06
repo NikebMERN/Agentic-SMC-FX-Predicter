@@ -12,6 +12,8 @@ const NAV = [
   ["training-records", "Training Records"],
   ["predict", "Predict"],
   ["settings", "Settings"],
+  ["thresholds", "Thresholds"],
+  ["ml-ops", "ML Operations"],
   ["logs", "Logs"],
   ["audit", "Audit"],
 ];

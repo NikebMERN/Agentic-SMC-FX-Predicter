@@ -110,11 +110,28 @@ def validate_interval(interval: str) -> str:
 
 
 def normalize_symbol(symbol: str) -> str:
-    """Validate and normalise a pair like 'eurusd' -> 'EURUSD'."""
-    symbol = (symbol or "").strip().upper().replace("/", "")
+    """Validate and normalise a pair like 'eur/usd' or 'EUR_USD' -> 'EURUSD'."""
+    symbol = (symbol or "").strip().upper().replace("/", "").replace("_", "")
     if len(symbol) != 6 or not symbol.isalpha():
         raise ValueError(f"Invalid currency pair: {symbol!r} (expected e.g. EURUSD)")
     return symbol
+
+
+def to_oanda_instrument(symbol: str) -> str:
+    """EURUSD -> EUR_USD for OANDA API."""
+    s = normalize_symbol(symbol)
+    return f"{s[:3]}_{s[3:]}"
+
+
+def to_display_pair(symbol: str) -> str:
+    """EURUSD -> EUR/USD for UI."""
+    s = normalize_symbol(symbol)
+    return f"{s[:3]}/{s[3:]}"
+
+
+def from_oanda_instrument(instrument: str) -> str:
+    """EUR_USD -> EURUSD."""
+    return normalize_symbol(instrument)
 
 
 def _frame_from_series(series: dict) -> pd.DataFrame:
@@ -169,7 +186,7 @@ def _fetch_oanda(symbol: str, interval: str) -> pd.DataFrame:
             f"(supported: {', '.join(OANDA_GRANULARITY)})"
         )
     host = OANDA_HOSTS.get(OANDA_ENV, OANDA_HOSTS["practice"])
-    instrument = f"{symbol[:3]}_{symbol[3:]}"
+    instrument = to_oanda_instrument(symbol)
     resp = requests.get(
         f"{host}/v3/instruments/{instrument}/candles",
         params={"granularity": granularity, "count": OANDA_CANDLE_COUNT, "price": "M"},

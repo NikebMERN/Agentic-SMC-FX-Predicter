@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import PageAlerts from "../components/PageAlerts.jsx";
 
@@ -58,6 +59,7 @@ export default function DashboardPage() {
   const bt = data.latest_backtest;
   const btSummary = bt?.summary || (bt?.symbol ? bt : null);
   const btPairs = bt?.pairs || (bt?.symbol ? [bt] : []);
+  const th = data.thresholds;
 
   return (
     <div>
@@ -81,6 +83,25 @@ export default function DashboardPage() {
           {h.refresh_running && <span className="rounded-full bg-[#3a2d12] px-2 py-0.5 text-xs text-[#d29922]">Refresh running</span>}
           {h.log_file_kb != null && <span className="rounded-full bg-[#21262d] px-2 py-0.5 text-xs text-[#8b949e]">Log {h.log_file_kb} KB</span>}
         </div>
+      </div>
+      <div className="mb-6 rounded-lg border border-[#30363d] bg-[#161b22] p-4">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-medium">SMC/ICT thresholds</h2>
+          <Link to="/thresholds" className="text-xs text-[#2f81f7] hover:underline">
+            Manage thresholds
+          </Link>
+        </div>
+        {th?.active ? (
+          <p className="text-sm text-[#c9d1d9]">
+            Active: <span className="font-medium text-white">{th.version_tag}</span>
+            <span className="text-[#8b949e]"> · id {th.version_id}</span>
+            {th.created_at && (
+              <span className="text-[#8b949e]"> · {String(th.created_at).slice(0, 10)}</span>
+            )}
+          </p>
+        ) : (
+          <p className="text-sm text-[#8b949e]">No active version — using built-in defaults.</p>
+        )}
       </div>
       {btSummary && (
         <div className="mb-6 rounded-lg border border-[#30363d] bg-[#161b22] p-4">
@@ -114,7 +135,11 @@ export default function DashboardPage() {
         </div>
       )}
       {analytics && (
-        <div className="mb-6 grid gap-3 md:grid-cols-3">
+        <div className="mb-6 grid gap-3 md:grid-cols-4">
+          <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-4">
+            <div className="text-2xl font-bold">{analytics.total_predictions ?? 0}</div>
+            <div className="text-xs text-[#8b949e]">Total predictions</div>
+          </div>
           <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-4">
             <div className="text-2xl font-bold">{analytics.conflict_count ?? 0}</div>
             <div className="text-xs text-[#8b949e]">User/market conflicts</div>
@@ -124,8 +149,30 @@ export default function DashboardPage() {
             <div className="text-xs text-[#8b949e]">Verification failures</div>
           </div>
           <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-4">
-            <div className="text-sm font-medium">Calibration</div>
-            <div className="mt-1 text-xs text-[#8b949e]">
+            <div className="text-sm font-medium">By action</div>
+            <div className="mt-1 max-h-24 overflow-y-auto text-xs text-[#8b949e]">
+              {Object.entries(analytics.action_counts || {}).map(([k, v]) => (
+                <div key={k}>{k}: {v}</div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+      {analytics?.accuracy_by_horizon && (
+        <div className="mb-6 rounded-lg border border-[#30363d] bg-[#161b22] p-4">
+          <h2 className="mb-2 font-medium">Accuracy by trading style</h2>
+          <div className="flex flex-wrap gap-4 text-sm">
+            {Object.entries(analytics.accuracy_by_horizon).map(([k, v]) => (
+              <div key={k}>{k}: {v.accuracy != null ? `${(v.accuracy * 100).toFixed(0)}%` : "—"} ({v.total})</div>
+            ))}
+          </div>
+        </div>
+      )}
+      {analytics && (
+        <div className="mb-6 grid gap-3 md:grid-cols-3">
+          <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-4 md:col-span-3">
+            <div className="text-sm font-medium">Confidence calibration</div>
+            <div className="mt-1 flex flex-wrap gap-4 text-xs text-[#8b949e]">
               {Object.entries(analytics.calibration || {}).map(([k, v]) => (
                 <div key={k}>{k}: {v.accuracy != null ? `${(v.accuracy * 100).toFixed(0)}%` : "—"} ({v.total})</div>
               ))}

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import PasswordField from "../components/PasswordField.jsx";
 import PairChipList from "../components/PairChipList.jsx";
 import { api } from "../api/client.js";
@@ -40,6 +41,7 @@ function PairTextarea({ value, onChange, placeholder, rows = 4 }) {
 }
 
 export default function SettingsPage() {
+  const [loading, setLoading] = useState(true);
   const [pairs, setPairs] = useState("");
   const [conf, setConf] = useState("0.55");
   const [slMaxPct, setSlMaxPct] = useState("0.40");
@@ -54,12 +56,12 @@ export default function SettingsPage() {
   const [confirmPw, setConfirmPw] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [thresholdSummary, setThresholdSummary] = useState(null);
 
   useEffect(() => {
     setLoading(true);
-    Promise.all([api("/settings"), api("/config")])
-      .then(([settings, cfg]) => {
+    Promise.all([api("/settings"), api("/config"), api("/thresholds/active").catch(() => null)])
+      .then(([settings, cfg, thresholds]) => {
         setPairs(settings.effective.supported_pairs.join(","));
         setConf(String(settings.effective.min_final_confidence));
         if (settings.effective.sl_max_pct != null) setSlMaxPct(String(settings.effective.sl_max_pct));
@@ -68,6 +70,7 @@ export default function SettingsPage() {
         setPredictionsEnabled(settings.effective.predictions_enabled !== "false");
         setDisabledPairs(settings.effective.disabled_pairs || "");
         setOverrides(settings.overrides || {});
+        setThresholdSummary(thresholds);
         setConfigRows(formatServerConfig(cfg));
       })
       .catch((e) => setError(e.message))
@@ -119,6 +122,46 @@ export default function SettingsPage() {
     <div>
       <h1 className="mb-4 text-lg font-semibold">Settings</h1>
       <PageAlerts error={error} notice={notice} onClearNotice={() => setNotice("")} />
+
+      <div className="mb-6 rounded-lg border border-[#30363d] bg-[#161b22] p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="font-medium text-white">SMC/ICT thresholds</h2>
+            <p className="mt-1 text-xs text-[#8b949e]">
+              Versioned detection and decision thresholds — managed in the dedicated threshold manager.
+            </p>
+          </div>
+          <Link
+            to="/thresholds"
+            className="rounded bg-[#2f81f7] px-3 py-1.5 text-sm text-white hover:bg-[#388bfd]"
+          >
+            Open threshold manager
+          </Link>
+        </div>
+        {thresholdSummary?.version ? (
+          <dl className="grid gap-2 text-sm sm:grid-cols-3">
+            <div>
+              <dt className="text-[#8b949e]">Active version</dt>
+              <dd className="text-[#e6edf3]">{thresholdSummary.version.version_tag}</dd>
+            </div>
+            <div>
+              <dt className="text-[#8b949e]">Version ID</dt>
+              <dd className="text-[#e6edf3]">{thresholdSummary.version.id}</dd>
+            </div>
+            <div>
+              <dt className="text-[#8b949e]">Created</dt>
+              <dd className="text-[#e6edf3]">
+                {thresholdSummary.version.created_at
+                  ? new Date(thresholdSummary.version.created_at).toLocaleString()
+                  : "—"}
+              </dd>
+            </div>
+          </dl>
+        ) : (
+          <p className="text-sm text-[#8b949e]">No active threshold version — using built-in defaults.</p>
+        )}
+      </div>
+
       <div className="mb-6 rounded-lg border border-[#30363d] bg-[#161b22] p-4">
         <label className="mb-1 block text-xs text-[#8b949e]">Pair list (comma separated — full 96-pair catalog is always active; use disabled pairs below to block symbols)</label>
         <PairTextarea value={pairs} onChange={(e) => setPairs(e.target.value)} placeholder="EURUSD,GBPUSD,..." />
@@ -151,9 +194,9 @@ export default function SettingsPage() {
           placeholder="EURUSD,GBPUSD"
           rows={2}
         />
-        <div className="mb-3" />
-        <button type="button" onClick={save} className="rounded bg-[#2f81f7] px-3 py-1.5 text-sm text-white">Save</button>
+        <button type="button" onClick={save} className="mt-3 rounded bg-[#2f81f7] px-3 py-1.5 text-sm text-white">Save</button>
       </div>
+
       {Object.keys(overrides).length > 0 && (
         <div className="mb-6 rounded-lg border border-[#30363d] bg-[#161b22] p-4">
           <h2 className="mb-2 font-medium">Database overrides</h2>

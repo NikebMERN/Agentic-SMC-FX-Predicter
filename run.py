@@ -82,6 +82,14 @@ def _migrate_schema(engine):
             "retry_count": "ALTER TABLE prediction_reviews ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
             "feedback_due_at": "ALTER TABLE prediction_reviews ADD COLUMN feedback_due_at DATETIME",
             "feedback_reminder_sent": "ALTER TABLE prediction_reviews ADD COLUMN feedback_reminder_sent BOOLEAN NOT NULL DEFAULT 0",
+            "threshold_version_id": "ALTER TABLE prediction_reviews ADD COLUMN threshold_version_id INTEGER",
+            "model_version_id": "ALTER TABLE prediction_reviews ADD COLUMN model_version_id INTEGER",
+            "rule_engine_version": "ALTER TABLE prediction_reviews ADD COLUMN rule_engine_version VARCHAR(32) DEFAULT 'v1'",
+            "feature_schema_version": "ALTER TABLE prediction_reviews ADD COLUMN feature_schema_version VARCHAR(16) DEFAULT 'v1'",
+            "meta_ml_probability": "ALTER TABLE prediction_reviews ADD COLUMN meta_ml_probability FLOAT",
+            "confidence_before_ml": "ALTER TABLE prediction_reviews ADD COLUMN confidence_before_ml FLOAT",
+            "final_confidence": "ALTER TABLE prediction_reviews ADD COLUMN final_confidence FLOAT",
+            "trading_style": "ALTER TABLE prediction_reviews ADD COLUMN trading_style VARCHAR(16) DEFAULT 'intraday'",
         },
     }
     with engine.begin() as conn:
@@ -219,6 +227,47 @@ def _seed_default_settings() -> None:
         db.close()
 
 
+def _seed_ml_settings() -> None:
+    """Default ML platform settings."""
+    from db.models import Setting
+    from db.session import SessionLocal
+    import json
+    from ml.promotion_gate import DEFAULT_GATE
+
+    defaults = {
+        "ml_mode": "active",
+        "model_promotion_enabled": "false",
+        "ml_blend_rule_weight": "0.55",
+        "ml_blend_ml_weight": "0.45",
+        "ml_downgrade_no_trade_below": "0.50",
+        "ml_downgrade_wait_below": "0.60",
+        "ml_confidence_cap": "0.85",
+        "promotion_gate_json": json.dumps(DEFAULT_GATE),
+        "walk_forward_train_days": "45",
+        "walk_forward_test_days": "7",
+        "walk_forward_step_days": "7",
+    }
+    db = SessionLocal()
+    try:
+        for key, value in defaults.items():
+            if not db.query(Setting).filter(Setting.key == key).first():
+                db.add(Setting(key=key, value=value))
+        db.commit()
+    except Exception as exc:
+        log.debug("ML settings seed skipped: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _seed_threshold_versions() -> None:
+    try:
+        from services.threshold_service import seed_initial_version
+        seed_initial_version()
+    except Exception as exc:
+        log.debug("Threshold version seed skipped: %s", exc)
+
+
 def init_database() -> bool:
     """Create tables if the database is reachable. Non-fatal on failure -
     prediction endpoints work without MySQL."""
@@ -230,6 +279,8 @@ def init_database() -> bool:
         _run_alembic()
         _bootstrap_admin()
         _seed_default_settings()
+        _seed_threshold_versions()
+        _seed_ml_settings()
         log.info("Database tables ready.")
         return True
     except Exception as exc:
@@ -363,12 +414,47 @@ def _wait_for_platform(api_thread: threading.Thread, dev_mode: bool) -> None:
 
 
 def start_background_services():
-    """Start outcome monitor, health monitor, and Telegram bot (supervised)."""
+    """Start outcome monitor, health monitor, scheduler, and Telegram bot."""
     from services.outcome_monitor import start_outcome_monitor
     from services.health_monitor import start_health_monitor
     start_outcome_monitor()
     start_health_monitor()
+    start_scheduler()
     start_bot_thread()
+
+
+def start_scheduler():
+    """APScheduler: nightly retrain + alert scanner."""
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from apscheduler.triggers.cron import CronTrigger
+        import os
+
+        cron = os.getenv("NIGHTLY_RETRAIN_CRON", "0 2 * * *")
+        tz = os.getenv("NIGHTLY_RETRAIN_TZ", "America/New_York")
+        parts = cron.split()
+        if len(parts) == 5:
+            minute, hour, day, month, dow = parts
+            trigger = CronTrigger(minute=minute, hour=hour, day=day, month=month, day_of_week=dow, timezone=tz)
+        else:
+            trigger = CronTrigger(hour=2, minute=0, timezone=tz)
+
+        sched = BackgroundScheduler(timezone=tz)
+
+        def _nightly():
+            from services.nightly_retrain import run_retrain
+            run_retrain(run_type="NIGHTLY")
+
+        def _alerts():
+            from services.alert_scanner import run_alert_scan
+            run_alert_scan()
+
+        sched.add_job(_nightly, trigger, id="nightly_retrain", replace_existing=True)
+        sched.add_job(_alerts, "interval", minutes=15, id="alert_scanner", replace_existing=True)
+        sched.start()
+        log.info("APScheduler started (nightly retrain + 15m alert scan)")
+    except Exception as exc:
+        log.warning("Scheduler not started: %s", exc)
 
 
 def _bot_supervisor():
