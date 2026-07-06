@@ -47,18 +47,26 @@ def _loop():
     while _running:
         try:
             from utils.config import TELEGRAM_BOT_TOKEN
-            if TELEGRAM_BOT_TOKEN:
+            from utils.telegram_http import bot_enabled, api_base, requests_proxies, requests_timeout
+            if TELEGRAM_BOT_TOKEN and bot_enabled():
                 import requests
+                from utils.telegram_http import api_base, requests_proxies, requests_timeout
+
                 r = requests.get(
-                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe",
-                    timeout=10,
+                    f"{api_base()}/getMe",
+                    timeout=requests_timeout(),
+                    proxies=requests_proxies(),
                 )
                 if r.ok:
                     record_success("bot")
                 else:
-                    record_failure("bot", r.text[:200])
+                    record_failure("bot", f"HTTP {r.status_code}")
         except Exception as exc:
-            record_failure("bot", str(exc))
+            msg = str(exc)
+            if "telegram.org" in msg or "Timed out" in msg or "timeout" in msg.lower():
+                record_failure("bot", "Telegram API unreachable (timeout)")
+            else:
+                record_failure("bot", msg[:200])
         time.sleep(INTERVAL_SEC)
 
 

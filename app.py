@@ -455,13 +455,17 @@ def submit_review_feedback(user_id, review_id):
         review_id,
         data.get("feedback", ""),
         data.get("comment"),
+        kind=data.get("kind"),
     )
     if not ok:
         code = 404 if "not found" in msg.lower() else 409 if "already" in msg.lower() else 400
         return jsonify({"error": msg}), code
+    from services.feedback_fields import split_feedback_fields
+    trade_entry, outcome = split_feedback_fields(row)
     return jsonify({
         "message": msg,
-        "feedback": row.feedback,
+        "trade_entry": trade_entry,
+        "feedback": outcome,
         "submitted_at": row.submitted_at.isoformat() if row.submitted_at else None,
     })
 

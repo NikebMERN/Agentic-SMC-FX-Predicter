@@ -85,6 +85,7 @@ export function formatReviewStatus(status) {
 
 export function formatFeedbackLabel(feedback) {
   const map = {
+    ENTERED: "Entered trade",
     SUCCESSFUL: "Successful",
     FAILED: "Failed",
     DID_NOT_TAKE: "Did not take",

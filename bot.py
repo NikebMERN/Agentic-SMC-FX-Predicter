@@ -3,7 +3,7 @@
 import asyncio
 
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup  # type: ignore
-from telegram.error import Conflict  # type: ignore
+from telegram.error import Conflict, NetworkError, RetryAfter, TimedOut  # type: ignore
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes  # type: ignore
 
 from services.user_access import decrement_quota, increment_quota, can_use_predictions, DEFAULT_SIGNALS_QUOTA
@@ -17,8 +17,41 @@ from utils.config import TELEGRAM_BOT_TOKEN
 from utils.logger import get_logger
 from utils import settings as runtime_settings
 from utils.settings import get_supported_pairs
+from utils.telegram_http import build_httpx_request, build_httpx_request_for_updates
 
 log = get_logger("bot")
+
+_SEND_RETRIES = 3
+
+
+async def _send_with_retry(coro_factory, *, label: str = "message"):
+    """Retry Telegram sends on transient network/timeouts."""
+    last_exc = None
+    for attempt in range(_SEND_RETRIES):
+        try:
+            return await coro_factory()
+        except RetryAfter as exc:
+            wait = float(exc.retry_after) + 1.0
+            log.warning("Telegram rate limit on %s — waiting %.0fs", label, wait)
+            await asyncio.sleep(wait)
+            last_exc = exc
+        except (TimedOut, NetworkError) as exc:
+            last_exc = exc
+            if attempt + 1 >= _SEND_RETRIES:
+                break
+            delay = 2 ** attempt
+            log.warning("Telegram %s timeout (attempt %d/%d): %s", label, attempt + 1, _SEND_RETRIES, exc)
+            await asyncio.sleep(delay)
+    log.warning("Telegram could not deliver %s after %d attempts: %s", label, _SEND_RETRIES, last_exc)
+    return None
+
+
+async def safe_reply(message, text: str, **kwargs):
+    return await _send_with_retry(lambda: message.reply_text(text, **kwargs), label="reply")
+
+
+async def safe_edit(message, text: str, **kwargs):
+    return await _send_with_retry(lambda: message.edit_text(text, **kwargs), label="edit")
 
 
 def _pair_keyboard() -> InlineKeyboardMarkup:
@@ -70,27 +103,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Pick a pair below or use /predict EURUSD.\n"
             "After 2 hours you'll be asked for feedback on each prediction."
         )
-    await update.message.reply_text(
+    text = (
         "SmartFlow AI — SMC/ICT signal engine.\n\n"
         + welcome
         + f"\n\n{DISCLAIMER}\n\n"
-        "Commands: /predict EURUSD, /pairs, /feedback, /link CODE, /unlink",
-        reply_markup=_pair_keyboard(),
+        "Commands: /predict EURUSD, /pairs, /feedback, /link CODE, /unlink"
     )
+    sent = await safe_reply(update.message, text, reply_markup=_pair_keyboard())
+    if sent is None:
+        log.error("Could not deliver /start welcome to chat %s (Telegram API unreachable)", chat_id)
 
 
 async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: /link 123456\nGet a code from POST /telegram/link-code (authenticated).")
+        await safe_reply(
+            update.message,
+            "Usage: /link 123456\nGet a code from POST /telegram/link-code (authenticated).",
+        )
         return
     code = context.args[0].strip().zfill(6) if context.args[0].strip().isdigit() else context.args[0].strip()
     chat_id = str(update.effective_chat.id)
     result = redeem_link_code(chat_id, code)
     if result.get("error"):
-        await update.message.reply_text(f"Link failed: {result['error']}")
+        await safe_reply(update.message, f"Link failed: {result['error']}")
     else:
-        await update.message.reply_text(
-            "Account linked. Predictions share the same free-trial quota as the web app."
+        await safe_reply(
+            update.message,
+            "Account linked. Predictions share the same free-trial quota as the web app.",
         )
 
 
@@ -98,10 +137,10 @@ async def unlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     user = get_user_by_chat(chat_id)
     if not user:
-        await update.message.reply_text("No linked account.")
+        await safe_reply(update.message, "No linked account.")
         return
     unlink_user(user.id)
-    await update.message.reply_text("Telegram unlinked.")
+    await safe_reply(update.message, "Telegram unlinked.")
 
 
 async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -121,24 +160,24 @@ async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reviews = await asyncio.to_thread(
             lambda: list_reviews(user_id=user.id, limit=10)
         )
-        pending = [r for r in reviews if r.get("feedback_required")]
+        pending = [r for r in reviews if r.get("can_record_outcome")]
         if not pending:
-            await update.message.reply_text("No predictions awaiting feedback right now.")
+            await safe_reply(update.message, "No predictions waiting for outcome feedback.")
             return
-        lines = ["Predictions awaiting your feedback (use /feedback ID SUCCESSFUL|FAILED|DID_NOT_TAKE):"]
+        lines = ["Rate your trade: /feedback ID SUCCESSFUL|FAILED|DID_NOT_TAKE"]
         for r in pending[:5]:
             lines.append(f"  #{r['id']} {r['symbol']} {r['predicted_action']}")
-        await update.message.reply_text("\n".join(lines))
+        await safe_reply(update.message, "\n".join(lines))
         return
 
     try:
         review_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("Usage: /feedback <review_id> SUCCESSFUL|FAILED|DID_NOT_TAKE")
+        await safe_reply(update.message, "Usage: /feedback <review_id> SUCCESSFUL|FAILED|DID_NOT_TAKE")
         return
     fb = context.args[1].upper()
     ok, msg, _ = await asyncio.to_thread(submit_feedback, user.id, review_id, fb)
-    await update.message.reply_text(msg if ok else f"Could not save feedback: {msg}")
+    await safe_reply(update.message, msg if ok else f"Could not save feedback: {msg}")
 
 
 async def _run_prediction(symbol: str, send_status, send_result, user_id: int | None = None):
@@ -168,7 +207,7 @@ async def _run_prediction(symbol: str, send_status, send_result, user_id: int | 
         f"Analyzing {symbol}...\n"
         "1. Pulling the latest candles\n"
         "2. Detecting valid SMC/ICT signals\n"
-        "3. Training the model on this data\n"
+        "3. Running meta-model quality gate\n"
         "4. Aggregating the decision\n\n"
         "This takes a moment."
     )
@@ -208,22 +247,22 @@ async def handle_pair_selection(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
     async def send_status(text):
-        await query.edit_message_text(text)
+        if await safe_edit(query.message, text) is None:
+            await safe_reply(query.message, text)
 
     async def send_result(text):
         try:
-            await query.edit_message_text(text, parse_mode="Markdown")
+            if await safe_edit(query.message, text, parse_mode="Markdown") is None:
+                await safe_reply(query.message, text, parse_mode="Markdown")
         except Exception:
-            await query.edit_message_text(text)
+            await safe_reply(query.message, text)
 
     await _run_prediction(symbol, send_status, send_result, user.id)
 
 
 async def predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text(
-            "Usage: /predict EURUSD", reply_markup=_pair_keyboard()
-        )
+        await safe_reply(update.message, "Usage: /predict EURUSD", reply_markup=_pair_keyboard())
         return
     tg = update.effective_user
     user = await asyncio.to_thread(
@@ -236,32 +275,40 @@ async def predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async def send_status(text):
         nonlocal status_msg
-        status_msg = await update.message.reply_text(text)
+        status_msg = await safe_reply(update.message, text)
 
     async def send_result(text):
         try:
             if status_msg:
-                await status_msg.edit_text(text, parse_mode="Markdown")
+                if await safe_edit(status_msg, text, parse_mode="Markdown") is None:
+                    await safe_reply(update.message, text, parse_mode="Markdown")
             else:
-                await update.message.reply_text(text, parse_mode="Markdown")
+                await safe_reply(update.message, text, parse_mode="Markdown")
         except Exception:
-            await update.message.reply_text(text)
+            await safe_reply(update.message, text)
 
-    await _run_prediction(
-        context.args[0], send_status, send_result, user.id
-    )
+    await _run_prediction(context.args[0], send_status, send_result, user.id)
 
 
 async def pairs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Supported pairs:", reply_markup=_pair_keyboard())
+    await safe_reply(update.message, "Supported pairs:", reply_markup=_pair_keyboard())
 
 
 async def _clear_webhook_for_polling(bot: Bot) -> bool:
     """Drop any webhook so long-polling (getUpdates) is allowed."""
-    deleted = await bot.delete_webhook(drop_pending_updates=True)
-    if deleted:
-        log.info("Removed active Telegram webhook — switching to long polling.")
-    return bool(deleted)
+    from utils.telegram_http import is_telegram_network_error
+
+    try:
+        deleted = await bot.delete_webhook(drop_pending_updates=True)
+        if deleted:
+            log.info("Removed active Telegram webhook — switching to long polling.")
+        return bool(deleted)
+    except Exception as exc:
+        if is_telegram_network_error(exc):
+            log.warning("Could not clear Telegram webhook (network): %s", exc)
+        else:
+            log.warning("Could not clear Telegram webhook: %s", exc)
+        return False
 
 
 async def _post_init(application):
@@ -269,20 +316,25 @@ async def _post_init(application):
 
 
 async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
-    if isinstance(context.error, Conflict):
-        log.warning(
-            "Telegram polling conflict (%s) — clearing webhook again.",
-            context.error,
-        )
+    err = context.error
+    if isinstance(err, Conflict):
+        log.warning("Telegram polling conflict (%s) — clearing webhook again.", err)
         await _clear_webhook_for_polling(context.application.bot)
         return
-    log.exception("Telegram bot handler error", exc_info=context.error)
+    if isinstance(err, (TimedOut, NetworkError)):
+        log.warning("Telegram network error (transient): %s", err)
+        return
+    log.exception("Telegram bot handler error", exc_info=err)
 
 
 def build_application():
+    request = build_httpx_request()
+    updates_request = build_httpx_request_for_updates()
     application = (
         ApplicationBuilder()
         .token(TELEGRAM_BOT_TOKEN)
+        .request(request)
+        .get_updates_request(updates_request)
         .post_init(_post_init)
         .build()
     )
@@ -305,31 +357,55 @@ def _prepare_event_loop(in_thread: bool) -> asyncio.AbstractEventLoop:
 
 async def _bootstrap_polling():
     """Delete webhook before Application.run_polling (belt-and-suspenders)."""
-    bot = Bot(TELEGRAM_BOT_TOKEN)
+    request = build_httpx_request()
+    bot = Bot(TELEGRAM_BOT_TOKEN, request=request)
     try:
         await _clear_webhook_for_polling(bot)
     finally:
         await bot.shutdown()
 
 
-def run_bot(in_thread: bool = False):
+def run_bot(in_thread: bool = False) -> bool:
+    """Start polling. Returns True if polling ran; False if network unavailable."""
     if not TELEGRAM_BOT_TOKEN:
         log.warning("TELEGRAM_BOT_TOKEN not set - bot disabled.")
-        return
+        return False
+
+    from utils.telegram_http import is_telegram_network_error, telegram_api_reachable
+
+    if not telegram_api_reachable():
+        log.warning(
+            "Telegram API unreachable — skipping bot start. "
+            "Use TELEGRAM_PROXY_URL if blocked, or TELEGRAM_BOT_ENABLED=false to disable."
+        )
+        return False
 
     loop = _prepare_event_loop(in_thread)
-    loop.run_until_complete(_bootstrap_polling())
+    try:
+        loop.run_until_complete(_bootstrap_polling())
+    except Exception as exc:
+        if is_telegram_network_error(exc):
+            log.warning("Telegram bootstrap failed (network): %s", exc)
+            return False
+        raise
 
     application = build_application()
     log.info("Telegram bot polling started.")
-    if in_thread:
-        application.run_polling(
-            stop_signals=None,
-            drop_pending_updates=True,
-            close_loop=False,
-        )
-    else:
-        application.run_polling(drop_pending_updates=True)
+    try:
+        if in_thread:
+            application.run_polling(
+                stop_signals=None,
+                drop_pending_updates=True,
+                close_loop=False,
+            )
+        else:
+            application.run_polling(drop_pending_updates=True)
+        return True
+    except Exception as exc:
+        if is_telegram_network_error(exc):
+            log.warning("Telegram polling stopped (network): %s", exc)
+            return False
+        raise
 
 
 if __name__ == "__main__":

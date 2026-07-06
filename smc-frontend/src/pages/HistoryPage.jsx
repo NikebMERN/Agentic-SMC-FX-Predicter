@@ -15,6 +15,7 @@ import {
 } from "recharts";
 import { api } from "../api/client.js";
 import PredictionHistoryChart from "../components/PredictionHistoryChart.jsx";
+import TradeEntryFeedback from "../components/TradeEntryFeedback.jsx";
 
 const OUTCOME_COLORS = {
   correct: "#22c55e",
@@ -41,6 +42,7 @@ export default function HistoryPage() {
   const [expandedId, setExpandedId] = useState(null);
   const [chartCache, setChartCache] = useState({});
   const [chartLoading, setChartLoading] = useState(null);
+  const [busyFeedbackId, setBusyFeedbackId] = useState(null);
 
   useEffect(() => {
     api("/my/history?hours=24")
@@ -80,6 +82,23 @@ export default function HistoryPage() {
       setError(err.message);
     } finally {
       setChartLoading(null);
+    }
+  }
+
+  async function submitTradeEntry(reviewId, feedback) {
+    setBusyFeedbackId(reviewId);
+    setError("");
+    try {
+      await api(`/my/reviews/${reviewId}/feedback`, {
+        method: "POST",
+        body: JSON.stringify({ feedback, kind: "trade_entry" }),
+      });
+      const fresh = await api("/my/history?hours=24");
+      setData(fresh);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusyFeedbackId(null);
     }
   }
 
@@ -216,6 +235,12 @@ export default function HistoryPage() {
                         predictedAt={chart.predicted_at}
                       />
                     )}
+                    <TradeEntryFeedback
+                      review={r}
+                      busy={busyFeedbackId === r.id}
+                      onSubmit={submitTradeEntry}
+                      compact
+                    />
                   </div>
                 )}
               </div>

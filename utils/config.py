@@ -112,6 +112,8 @@ if not DATABASE_URL:
 # -----------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+# Optional: TELEGRAM_PROXY_URL=socks5://127.0.0.1:1080 (see utils/telegram_http.py)
+
 # -----------------------------
 # Local Data Folder
 # -----------------------------

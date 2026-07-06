@@ -8,13 +8,14 @@ from datetime import datetime
 from db.models import MarketVerification, PredictionReview, SignalOutcome, TrainingRecord, User, UserFeedback
 from db.session import SessionLocal
 from engine.confluence import ACTION_BUY, ACTION_NO_TRADE, ACTION_SELL, ACTION_WAIT
-from services.notifier import notify_admin
+from services.feedback_fields import effective_outcome_feedback
 from utils.config import INTERVAL as DEFAULT_INTERVAL
 from utils.logger import get_logger
 
 log = get_logger("services.training_service")
 
 FEEDBACK_LABEL_MAP = {
+    "ENTERED": None,
     "SUCCESSFUL": "correct",
     "FAILED": "wrong",
     "DID_NOT_TAKE": "skipped",
@@ -71,7 +72,7 @@ def _parse_features(raw: str | None) -> dict:
 
 
 def _user_aligns_with_market(user_feedback: str | None, actual_direction: str | None, predicted_action: str) -> bool | None:
-    if not user_feedback or user_feedback in ("DID_NOT_TAKE", "UNCLEAR"):
+    if not user_feedback or user_feedback in ("DID_NOT_TAKE", "UNCLEAR", "ENTERED"):
         return None
     if not actual_direction:
         return None
@@ -160,7 +161,7 @@ def assess_training_readiness(
     features = _parse_features(row.features_json)
     feature_count = len(features)
     blockers: list[str] = []
-    user_feedback = uf.feedback if uf else None
+    user_feedback = effective_outcome_feedback(uf)
     market_direction = mv.actual_direction if mv else None
     market_outcome = mv.outcome if mv else None
     aligned = _user_aligns_with_market(
@@ -279,7 +280,7 @@ def detect_conflict(
     predicted_action: str,
 ) -> bool:
     """True when user feedback disagrees with measured market direction."""
-    if not user_feedback or user_feedback in ("DID_NOT_TAKE", "UNCLEAR"):
+    if not user_feedback or user_feedback in ("DID_NOT_TAKE", "UNCLEAR", "ENTERED"):
         return False
     favored = _market_favored_prediction(predicted_action, actual_direction)
     if favored is None:
@@ -307,10 +308,11 @@ def reconcile_training_record(
         action = predicted_action or (review.predicted_action if review else "")
 
         label_market = MARKET_LABEL_MAP.get(mv.actual_direction) if mv and mv.actual_direction else None
-        label_user = FEEDBACK_LABEL_MAP.get(uf.feedback) if uf else None
+        outcome_fb = effective_outcome_feedback(uf)
+        label_user = FEEDBACK_LABEL_MAP.get(outcome_fb) if outcome_fb else None
         meta_label = _meta_label_from_outcome(review, db)
         conflict = detect_conflict(
-            uf.feedback if uf else None,
+            outcome_fb,
             mv.actual_direction if mv else None,
             action,
         )
@@ -341,12 +343,12 @@ def reconcile_training_record(
             user = db.query(User).filter(User.id == review.user_id).first()
             username = user.username if user else f"user#{review.user_id}"
             notify_admin(
-                f"Feedback conflict: {username} reported {uf.feedback if uf else '?'} on "
+                f"Feedback conflict: {username} reported {outcome_fb or '?'} on "
                 f"{review.symbol} {review.predicted_action}, but market moved {mv.actual_direction if mv else '?'}."
             )
             log.warning(
                 "Feedback conflict for user %s review %s: user=%s market=%s",
-                username, prediction_id, uf.feedback if uf else None, mv.actual_direction if mv else None,
+                username, prediction_id, outcome_fb, mv.actual_direction if mv else None,
             )
         if readiness.get("training_ready"):
             log.info(
@@ -421,7 +423,7 @@ def list_training_records(
                 "symbol": review.symbol if review else None,
                 "interval": _review_interval(review),
                 "predicted_action": review.predicted_action if review else None,
-                "user_feedback": uf.feedback if uf else None,
+                "user_feedback": effective_outcome_feedback(uf),
                 "market_direction": mv.actual_direction if mv else None,
                 "market_outcome": mv.outcome if mv else None,
                 "label_from_market": r.label_from_market or (
@@ -509,7 +511,7 @@ def export_training_dataset(
                     "predicted_action": review.predicted_action if review else None,
                     "market_direction": mv.actual_direction if mv else None,
                     "market_outcome": mv.outcome if mv else None,
-                    "user_feedback": uf.feedback if uf else None,
+                    "user_feedback": effective_outcome_feedback(uf),
                     "conflict": r.conflict,
                     "label_quality_score": r.label_quality_score,
                     "admin_status": r.admin_status,

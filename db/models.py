@@ -421,7 +421,8 @@ class UserFeedback(Base):
     id = Column(Integer, primary_key=True)
     prediction_id = Column(Integer, ForeignKey('prediction_reviews.id', ondelete='CASCADE'), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
-    feedback = Column(String(16), nullable=False)
+    trade_entry = Column(String(16), nullable=True)
+    feedback = Column(String(16), nullable=True)
     comment = Column(Text, nullable=True)
     submitted_at = Column(DateTime, default=datetime.utcnow)
 

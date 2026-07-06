@@ -82,6 +82,8 @@ def test_settings_roundtrip_and_validation(client, admin_token):
     assert "GBPJPY" in effective
     assert len(effective) >= 90
     assert body["effective"]["min_final_confidence"] == 0.6
+    assert "EURUSD" in body["stored"]["supported_pairs"]
+    assert "GBPJPY" in body["stored"]["supported_pairs"]
 
     # the public /pairs endpoint reflects the full catalog
     public_pairs = client.get("/pairs").get_json()["pairs"]

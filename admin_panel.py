@@ -918,6 +918,15 @@ def get_settings(admin_id):
             "ml_mode": settings.get("ml_mode", "fresh"),
             "trading_thresholds": get_thresholds(),
         },
+        "stored": {
+            "supported_pairs": settings.get("supported_pairs", "") or "",
+            "disabled_pairs": settings.get("disabled_pairs", "") or "",
+            "min_final_confidence": settings.get("min_final_confidence", ""),
+            "broadcast_signals": settings.get("broadcast_signals", ""),
+            "predictions_enabled": settings.get("predictions_enabled", ""),
+            "sl_max_pct": settings.get("sl_max_pct", ""),
+            "tp_max_pct": settings.get("tp_max_pct", ""),
+        },
         "threshold_defaults": DEFAULT_THRESHOLDS.model_dump(),
         "pair_thresholds": list_pair_thresholds(),
         "overrides": settings.all_settings(),
@@ -1009,7 +1018,14 @@ def update_settings(admin_id):
         return jsonify({"error": "Nothing to update"}), 400
     log.info("Admin %s updated settings: %s", admin_id, applied)
     log_admin_action(admin_id, "update_settings", "settings", None, applied)
-    return jsonify({"message": "Settings saved", "applied": applied})
+    return jsonify({
+        "message": "Settings saved",
+        "applied": applied,
+        "stored": {
+            "supported_pairs": settings.get("supported_pairs", "") or "",
+            "disabled_pairs": settings.get("disabled_pairs", "") or "",
+        },
+    })
 
 
 @admin_bp.route("/admin/api/thresholds/active")

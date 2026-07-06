@@ -12,6 +12,7 @@ from db.models import DetectedSignal, MarketVerification, PredictionReview
 from db.session import SessionLocal
 from engine.confluence import ACTION_BUY, ACTION_NO_TRADE, ACTION_SELL, ACTION_WAIT
 from engine.data import get_data
+from services.feedback_fields import split_feedback_fields
 from services.training_service import reconcile_training_record
 from services.user_access import FEEDBACK_DUE_HOURS
 from utils import settings
@@ -23,6 +24,18 @@ log = get_logger("services.prediction_review")
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SNAPSHOT_DIR = os.path.join(PROJECT_ROOT, "data", "snapshots")
 MAX_VERIFY_RETRIES = int(os.getenv("PREDICTION_VERIFY_MAX_RETRIES", "5"))
+
+NON_TRADE_ACTIONS = frozenset({
+    ACTION_NO_TRADE,
+    ACTION_WAIT,
+    "NO_TRADE",
+    "WAIT_FOR_CONFIRMATION",
+})
+
+
+def is_trade_signal(action: str | None) -> bool:
+    return bool(action and action not in NON_TRADE_ACTIONS)
+
 
 HORIZON_HOURS = {
     "scalping": 1,
@@ -429,9 +442,14 @@ def list_reviews(
             scores = json.loads(r.scores_json) if r.scores_json else {}
             uf = r.user_feedback
             mv = r.market_verification
-            now = datetime.utcnow()
             feedback_due = r.feedback_due_at or r.evaluate_at
-            feedback_open = feedback_due and feedback_due <= now and not uf
+            trade_entry, outcome = split_feedback_fields(uf)
+            can_record_entry = is_trade_signal(r.predicted_action) and not trade_entry
+            can_record_outcome = (
+                is_trade_signal(r.predicted_action)
+                and not outcome
+                and trade_entry != "DID_NOT_TAKE"
+            )
             tr = r.training_record
             conflict = tr.conflict if tr else False
             if conflicts_only and not conflict:
@@ -445,6 +463,8 @@ def list_reviews(
                 "symbol": r.symbol,
                 "interval": r.interval or DEFAULT_INTERVAL,
                 "horizon": r.horizon,
+                "trading_style": r.trading_style or r.horizon or "intraday",
+                "strategy_mode": r.strategy_mode or "both",
                 "predicted_action": r.predicted_action,
                 "direction": r.direction,
                 "predicted_confidence": r.predicted_confidence,
@@ -454,14 +474,17 @@ def list_reviews(
                 "component_scores": scores,
                 "predicted_at": r.predicted_at.isoformat() if r.predicted_at else None,
                 "feedback_due_at": feedback_due.isoformat() if feedback_due else None,
-                "feedback_required": bool(feedback_open),
+                "feedback_required": False,
+                "can_record_trade_entry": can_record_entry,
+                "can_record_outcome": can_record_outcome,
+                "user_trade_entry": trade_entry,
                 "evaluate_at": r.evaluate_at.isoformat() if r.evaluate_at else None,
                 "actual_price": r.actual_price,
                 "actual_direction": r.actual_direction,
                 "was_correct": r.was_correct,
                 "status": r.status,
                 "evaluated_at": r.evaluated_at.isoformat() if r.evaluated_at else None,
-                "user_feedback": uf.feedback if uf else None,
+                "user_feedback": outcome,
                 "user_comment": uf.comment if uf else None,
                 "market_outcome": mv.outcome if mv else None,
                 "market_verification": {

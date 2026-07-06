@@ -20,19 +20,36 @@ def send_message(chat_id: str, text: str) -> bool:
     if not TELEGRAM_BOT_TOKEN:
         return False
     from utils.compliance import assert_safe_wording, DISCLAIMER
+    from utils.telegram_http import api_base, requests_proxies, requests_timeout
+
     safe = assert_safe_wording(text)
     if DISCLAIMER not in safe:
         safe = f"{safe}\n\n{DISCLAIMER}"
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": chat_id, "text": safe[:4096]},
-            timeout=15,
-        )
-        return r.ok
-    except Exception as exc:
-        log.warning("Telegram send failed: %s", exc)
-        return False
+    for attempt in range(3):
+        try:
+            r = requests.post(
+                f"{api_base()}/sendMessage",
+                json={"chat_id": chat_id, "text": safe[:4096]},
+                timeout=requests_timeout(),
+                proxies=requests_proxies(),
+            )
+            if r.ok:
+                return True
+            log.warning("Telegram send failed (%s): %s", r.status_code, r.text[:200])
+            return False
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            # This network intermittently drops connections to Telegram —
+            # connection failures deserve the same retry as timeouts.
+            if attempt + 1 >= 3:
+                from utils.telegram_http import redact
+                log.warning("Telegram send failed after %d attempts: %s", attempt + 1, redact(exc))
+                return False
+            time.sleep(2 ** attempt)
+        except Exception as exc:
+            from utils.telegram_http import redact
+            log.warning("Telegram send failed: %s", redact(exc))
+            return False
+    return False
 
 
 def notify_user(user_id: int, text: str) -> bool:

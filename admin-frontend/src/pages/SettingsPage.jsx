@@ -57,19 +57,27 @@ export default function SettingsPage() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [thresholdSummary, setThresholdSummary] = useState(null);
+  const [activePairCount, setActivePairCount] = useState(0);
+
+  function applySettingsPayload(settings) {
+    const storedPairs = settings.stored?.supported_pairs ?? settings.overrides?.supported_pairs ?? "";
+    const storedDisabled = settings.stored?.disabled_pairs ?? settings.overrides?.disabled_pairs ?? "";
+    setPairs(storedPairs);
+    setDisabledPairs(storedDisabled);
+    setConf(String(settings.effective.min_final_confidence));
+    if (settings.effective.sl_max_pct != null) setSlMaxPct(String(settings.effective.sl_max_pct));
+    if (settings.effective.tp_max_pct != null) setTpMaxPct(String(settings.effective.tp_max_pct));
+    setBroadcast(Boolean(settings.effective.broadcast_signals));
+    setPredictionsEnabled(settings.effective.predictions_enabled !== "false");
+    setOverrides(settings.overrides || {});
+    setActivePairCount(settings.effective.supported_pairs?.length ?? 0);
+  }
 
   useEffect(() => {
     setLoading(true);
     Promise.all([api("/settings"), api("/config"), api("/thresholds/active").catch(() => null)])
       .then(([settings, cfg, thresholds]) => {
-        setPairs(settings.effective.supported_pairs.join(","));
-        setConf(String(settings.effective.min_final_confidence));
-        if (settings.effective.sl_max_pct != null) setSlMaxPct(String(settings.effective.sl_max_pct));
-        if (settings.effective.tp_max_pct != null) setTpMaxPct(String(settings.effective.tp_max_pct));
-        setBroadcast(Boolean(settings.effective.broadcast_signals));
-        setPredictionsEnabled(settings.effective.predictions_enabled !== "false");
-        setDisabledPairs(settings.effective.disabled_pairs || "");
-        setOverrides(settings.overrides || {});
+        applySettingsPayload(settings);
         setThresholdSummary(thresholds);
         setConfigRows(formatServerConfig(cfg));
       })
@@ -80,7 +88,7 @@ export default function SettingsPage() {
   async function save() {
     setError("");
     try {
-      await api("/settings", {
+      const res = await api("/settings", {
         method: "POST",
         body: JSON.stringify({
           supported_pairs: pairs,
@@ -92,6 +100,18 @@ export default function SettingsPage() {
           disabled_pairs: disabledPairs,
         }),
       });
+      if (res.stored?.supported_pairs != null) {
+        setPairs(res.stored.supported_pairs);
+      } else if (Array.isArray(res.applied?.supported_pairs)) {
+        setPairs(res.applied.supported_pairs.join(","));
+      }
+      if (res.stored?.disabled_pairs != null) {
+        setDisabledPairs(res.stored.disabled_pairs);
+      } else if (Array.isArray(res.applied?.disabled_pairs)) {
+        setDisabledPairs(res.applied.disabled_pairs.join(","));
+      }
+      const refreshed = await api("/settings");
+      applySettingsPayload(refreshed);
       setNotice("Settings saved");
     } catch (e) {
       setError(e.message);
@@ -163,7 +183,13 @@ export default function SettingsPage() {
       </div>
 
       <div className="mb-6 rounded-lg border border-[#30363d] bg-[#161b22] p-4">
-        <label className="mb-1 block text-xs text-[#8b949e]">Pair list (comma separated — full 96-pair catalog is always active; use disabled pairs below to block symbols)</label>
+        <label className="mb-1 block text-xs text-[#8b949e]">
+          Supported pairs (comma separated) — saved exactly as entered. Custom pairs are merged into the platform catalog on save.
+        </label>
+        <p className="mb-2 text-[11px] text-[#8b949e]">
+          Active in menus and predictions: {activePairCount} pair{activePairCount === 1 ? "" : "s"}.
+          Use disabled pairs below to block symbols without removing them from this list.
+        </p>
         <PairTextarea value={pairs} onChange={(e) => setPairs(e.target.value)} placeholder="EURUSD,GBPUSD,..." />
         <label className="mb-1 block text-xs text-[#8b949e]">Min blended confidence</label>
         <input value={conf} onChange={(e) => setConf(e.target.value)} type="number" step="0.01" min="0.3" max="0.95" className="mb-3 w-32 rounded border border-[#30363d] bg-[#0d1117] px-3 py-2 text-sm" />

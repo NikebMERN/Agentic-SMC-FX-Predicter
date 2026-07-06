@@ -198,8 +198,8 @@ def notify_feedback_due(user_id: int, *, prediction_id: int, symbol: str, predic
     create_notification(
         user_id,
         kind="feedback_due",
-        title=f"Feedback due — {symbol}",
-        body=f"Your {symbol} prediction ({predicted_action}) is ready for feedback.",
+        title=f"Optional — {symbol} trade check-in",
+        body=f"Did you enter the {symbol} {predicted_action} signal? You can record this anytime.",
         link="/feedback",
         meta={"prediction_id": prediction_id, "symbol": symbol, "predicted_action": predicted_action},
     )

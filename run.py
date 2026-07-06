@@ -91,6 +91,33 @@ def _migrate_schema(engine):
             "final_confidence": "ALTER TABLE prediction_reviews ADD COLUMN final_confidence FLOAT",
             "trading_style": "ALTER TABLE prediction_reviews ADD COLUMN trading_style VARCHAR(16) DEFAULT 'intraday'",
         },
+        "model_versions": {
+            "trading_style": "ALTER TABLE model_versions ADD COLUMN trading_style VARCHAR(16) NOT NULL DEFAULT 'intraday'",
+            "model_type": "ALTER TABLE model_versions ADD COLUMN model_type VARCHAR(16) NOT NULL DEFAULT 'RANDOM_FOREST'",
+            "calibrator_path": "ALTER TABLE model_versions ADD COLUMN calibrator_path VARCHAR(512)",
+            "feature_schema_version": "ALTER TABLE model_versions ADD COLUMN feature_schema_version VARCHAR(16) DEFAULT 'v1'",
+            "threshold_version_id": "ALTER TABLE model_versions ADD COLUMN threshold_version_id INTEGER",
+            "rule_engine_version": "ALTER TABLE model_versions ADD COLUMN rule_engine_version VARCHAR(32) DEFAULT 'v1'",
+            "training_data_start": "ALTER TABLE model_versions ADD COLUMN training_data_start DATETIME",
+            "training_data_end": "ALTER TABLE model_versions ADD COLUMN training_data_end DATETIME",
+            "training_record_count": "ALTER TABLE model_versions ADD COLUMN training_record_count INTEGER NOT NULL DEFAULT 0",
+            "walk_forward_score": "ALTER TABLE model_versions ADD COLUMN walk_forward_score FLOAT",
+            "precision": "ALTER TABLE model_versions ADD COLUMN `precision` FLOAT",
+            "recall": "ALTER TABLE model_versions ADD COLUMN recall FLOAT",
+            "f1": "ALTER TABLE model_versions ADD COLUMN f1 FLOAT",
+            "brier_score": "ALTER TABLE model_versions ADD COLUMN brier_score FLOAT",
+            "log_loss": "ALTER TABLE model_versions ADD COLUMN log_loss FLOAT",
+            "win_rate": "ALTER TABLE model_versions ADD COLUMN win_rate FLOAT",
+            "accepted_signal_count": "ALTER TABLE model_versions ADD COLUMN accepted_signal_count INTEGER NOT NULL DEFAULT 0",
+            "rejected_signal_count": "ALTER TABLE model_versions ADD COLUMN rejected_signal_count INTEGER NOT NULL DEFAULT 0",
+            "status": "ALTER TABLE model_versions ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'CANDIDATE'",
+            "promoted_from_version_id": "ALTER TABLE model_versions ADD COLUMN promoted_from_version_id INTEGER",
+            "promoted_at": "ALTER TABLE model_versions ADD COLUMN promoted_at DATETIME",
+            "created_at": "ALTER TABLE model_versions ADD COLUMN created_at DATETIME",
+        },
+        "user_feedback": {
+            "trade_entry": "ALTER TABLE user_feedback ADD COLUMN trade_entry VARCHAR(16)",
+        },
     }
     with engine.begin() as conn:
         for table, cols in column_migrations.items():
@@ -115,6 +142,31 @@ def _migrate_schema(engine):
                     "WHERE is_active=1 AND status='pending'"
                 ))
 
+        if "model_versions" in tables:
+            existing = {c["name"] for c in inspector.get_columns("model_versions")}
+            if "status" in existing:
+                conn.execute(text(
+                    "UPDATE model_versions SET status='ACTIVE' WHERE is_active=1 "
+                    "AND (status IS NULL OR status='CANDIDATE')"
+                ))
+                conn.execute(text(
+                    "UPDATE model_versions SET status='ARCHIVED' WHERE is_active=0 "
+                    "AND (status IS NULL OR status='CANDIDATE')"
+                ))
+
+        if "user_feedback" in tables:
+            uf_cols = {c["name"] for c in inspector.get_columns("user_feedback")}
+            if "trade_entry" in uf_cols:
+                conn.execute(text(
+                    "UPDATE user_feedback SET trade_entry = feedback, feedback = NULL "
+                    "WHERE trade_entry IS NULL AND feedback IN ('ENTERED', 'DID_NOT_TAKE')"
+                ))
+
+    # Create any new ML platform tables missing from older deployments.
+    from db.session import Base
+    import db.models  # noqa: F401
+    Base.metadata.create_all(bind=engine)
+
 
 def _run_alembic():
     try:
@@ -126,7 +178,7 @@ def _run_alembic():
             command.upgrade(cfg, "head")
             log.info("Alembic migrations applied.")
     except Exception as exc:
-        log.debug("Alembic upgrade skipped: %s", exc)
+        log.warning("Alembic upgrade skipped or failed: %s", exc)
 
 
 def _bootstrap_admin():
@@ -190,7 +242,7 @@ def _seed_default_settings() -> None:
     """Persist the full FX pair catalog; upgrade legacy short lists on startup."""
     from db.models import Setting
     from db.session import SessionLocal
-    from utils.pairs import DEFAULT_FX_PAIRS, catalog_version
+    from utils.pairs import DEFAULT_FX_PAIRS, catalog_version, merge_pairs
 
     canonical = ",".join(DEFAULT_FX_PAIRS)
     db = SessionLocal()
@@ -205,21 +257,32 @@ def _seed_default_settings() -> None:
             log.info("Seeded supported_pairs (%d pairs).", len(DEFAULT_FX_PAIRS))
             return
 
-        current = {p.strip().upper() for p in row.value.split(",") if p.strip()}
-        needs_upgrade = (
-            current == _OLD_MAJOR_SEVEN
-            or len(current) < len(DEFAULT_FX_PAIRS)
-            or not ver
-            or ver.value != catalog_version()
-        )
-        if needs_upgrade:
+        current_list = [p.strip().upper() for p in row.value.split(",") if p.strip()]
+        current = set(current_list)
+
+        if current == _OLD_MAJOR_SEVEN:
             row.value = canonical
             if ver:
                 ver.value = catalog_version()
             else:
                 db.add(Setting(key="pairs_catalog_version", value=catalog_version()))
             db.commit()
-            log.info("Upgraded supported_pairs to %d pairs (catalog %s).", len(DEFAULT_FX_PAIRS), catalog_version())
+            log.info("Upgraded legacy major-seven supported_pairs to full catalog.")
+            return
+
+        if not ver or ver.value != catalog_version():
+            merged = merge_pairs(current_list, DEFAULT_FX_PAIRS)
+            row.value = ",".join(merged)
+            if ver:
+                ver.value = catalog_version()
+            else:
+                db.add(Setting(key="pairs_catalog_version", value=catalog_version()))
+            db.commit()
+            log.info(
+                "Merged catalog %s into supported_pairs (%d stored).",
+                catalog_version(),
+                len(merged),
+            )
     except Exception as exc:
         log.debug("Settings seed skipped: %s", exc)
         db.rollback()
@@ -321,28 +384,101 @@ def log_production_warnings() -> None:
     )
 
 
-def _assert_port_free():
-    """Fail fast if another instance already serves the API port.
-
-    On Windows two processes can silently bind the same port, leaving
-    a stale instance answering requests with old code — refuse to start
-    instead."""
+def _port_in_use(port: int, host: str = "127.0.0.1") -> bool:
     import socket
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        probe.settimeout(1.5)
-        if probe.connect_ex(("127.0.0.1", API_PORT)) == 0:
-            raise SystemExit(
-                f"Port {API_PORT} is already serving — another SmartFlow instance "
-                "is running. Stop it first (or change API_PORT)."
-            )
+        probe.settimeout(1.0)
+        return probe.connect_ex((host, port)) == 0
     finally:
         probe.close()
 
 
+def _pids_listening_on_port(port: int) -> list[int]:
+    """Return PIDs with a listener on *port* (best effort, Windows + Unix)."""
+    pids: list[int] = []
+    try:
+        if os.name == "nt":
+            out = subprocess.check_output(
+                ["netstat", "-ano"],
+                text=True,
+                errors="replace",
+            )
+            token = f":{port}"
+            for line in out.splitlines():
+                if "LISTENING" not in line.upper() or token not in line:
+                    continue
+                parts = line.split()
+                if parts and parts[-1].isdigit():
+                    pids.append(int(parts[-1]))
+        else:
+            out = subprocess.check_output(
+                ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+                text=True,
+                errors="replace",
+            )
+            for line in out.splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    pids.append(int(line))
+    except (FileNotFoundError, subprocess.CalledProcessError, OSError):
+        pass
+    return list(dict.fromkeys(pids))
+
+
+def _kill_pid(pid: int) -> None:
+    if pid in (0, os.getpid()):
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/F"],
+                check=False,
+                capture_output=True,
+            )
+        else:
+            import signal
+            os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
+def _release_ports(ports: list[int]) -> list[int]:
+    """Stop stale listeners from a prior run. Returns ports still blocked."""
+    blocked = [p for p in ports if _port_in_use(p)]
+    if not blocked:
+        return []
+    log.warning(
+        "Port(s) %s still in use — stopping leftover process(es) from a previous run.",
+        blocked,
+    )
+    skip = {os.getpid()}
+    for port in blocked:
+        for pid in _pids_listening_on_port(port):
+            if pid in skip:
+                continue
+            log.info("Releasing port %s (PID %s)", port, pid)
+            _kill_pid(pid)
+    time.sleep(0.6)
+    return [p for p in blocked if _port_in_use(p)]
+
+
+def _assert_port_free():
+    """Fail fast if another instance already serves the API port."""
+    if _port_in_use(API_PORT):
+        raise RuntimeError(
+            f"Port {API_PORT} is already in use. Stop the other SmartFlow instance "
+            f"or change API_PORT in .env."
+        )
+
+
 def serve_api():
     log_production_warnings()
-    _assert_port_free()
+    try:
+        _assert_port_free()
+    except RuntimeError as exc:
+        log.error("%s", exc)
+        return
     from app import app
     try:
         from waitress import serve
@@ -351,12 +487,29 @@ def serve_api():
     except ImportError:
         log.warning("waitress not installed - falling back to the Flask dev server.")
         app.run(host=API_HOST, port=API_PORT, debug=False, use_reloader=False, threaded=True)
+    except OSError as exc:
+        log.error("API failed to bind port %s: %s", API_PORT, exc)
+    except Exception:
+        log.exception("API server crashed")
 
 
 def _start_api_thread() -> threading.Thread:
     thread = threading.Thread(target=serve_api, name="api-server", daemon=True)
     thread.start()
     return thread
+
+
+def _prepare_platform_ports(dev_mode: bool) -> None:
+    """Free API + Vite ports left over when a prior run was interrupted."""
+    ports = [API_PORT]
+    if dev_mode:
+        ports.extend([5173, 5174])
+    still_blocked = _release_ports(ports)
+    if still_blocked:
+        raise SystemExit(
+            "Could not start — port(s) still in use after cleanup: "
+            f"{still_blocked}. Close other apps using those ports and retry."
+        )
 
 
 def _start_frontend_processes(dev_mode: bool) -> None:
@@ -399,7 +552,10 @@ def _wait_for_platform(api_thread: threading.Thread, dev_mode: bool) -> None:
     try:
         while True:
             if not api_thread.is_alive():
-                log.error("API server stopped unexpectedly.")
+                log.error(
+                    "API server stopped unexpectedly — check logs above for port %s errors.",
+                    API_PORT,
+                )
                 break
             for proc in list(_child_processes):
                 code = proc.poll()
@@ -460,6 +616,7 @@ def start_scheduler():
 def _bot_supervisor():
     """Run Telegram polling in a loop; auto-restart if polling stops or crashes."""
     from utils.config import TELEGRAM_BOT_TOKEN
+    from utils.telegram_http import bot_enabled, is_telegram_network_error, telegram_api_reachable
     import time
     from bot import run_bot
 
@@ -470,26 +627,51 @@ def _bot_supervisor():
         )
         return
 
-    backoff = 5
+    if not bot_enabled():
+        log.info("Telegram bot disabled (TELEGRAM_BOT_ENABLED=false). Web/API only.")
+        return
+
+    backoff = 30
     while True:
-        try:
-            run_bot(in_thread=True)
+        if not telegram_api_reachable():
             log.warning(
-                "Telegram bot polling stopped — restarting in %ss (web/API keeps running)",
+                "Telegram API unreachable — will retry in %ss "
+                "(set TELEGRAM_PROXY_URL or TELEGRAM_BOT_ENABLED=false)",
                 backoff,
             )
-        except Exception:
-            log.exception(
-                "Telegram bot error — restarting in %ss (web/API keeps running)",
-                backoff,
-            )
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 300)
+            continue
+
+        backoff = 30
+        try:
+            if run_bot(in_thread=True):
+                log.warning(
+                    "Telegram bot polling stopped — restarting in %ss (web/API keeps running)",
+                    backoff,
+                )
+        except Exception as exc:
+            if is_telegram_network_error(exc):
+                log.warning(
+                    "Telegram bot network error — retrying in %ss: %s",
+                    backoff,
+                    exc,
+                )
+            else:
+                log.exception(
+                    "Telegram bot error — restarting in %ss (web/API keeps running)",
+                    backoff,
+                )
         time.sleep(backoff)
-        backoff = min(backoff * 2, 60)
+        backoff = min(backoff * 2, 300)
 
 
 def start_bot_thread() -> threading.Thread | None:
     from utils.config import TELEGRAM_BOT_TOKEN
-    if not TELEGRAM_BOT_TOKEN:
+    from utils.telegram_http import bot_enabled
+    if not TELEGRAM_BOT_TOKEN or not bot_enabled():
+        if TELEGRAM_BOT_TOKEN and not bot_enabled():
+            log.info("Telegram bot supervisor skipped (TELEGRAM_BOT_ENABLED=false).")
         return None
     # Daemon thread: exits with the process on Ctrl+C; supervisor restarts polling after errors.
     thread = threading.Thread(target=_bot_supervisor, daemon=True, name="telegram-bot")
@@ -514,6 +696,7 @@ def cmd_all(build_frontend: bool = True, dev_frontend: bool = False):
             log.warning("User app build skipped or failed.")
 
     init_database()
+    _prepare_platform_ports(dev_mode)
     start_background_services()
 
     api_thread = _start_api_thread()
@@ -702,6 +885,7 @@ def main():
     elif args.command == "api":
         from utils.config import TELEGRAM_BOT_TOKEN
         init_database()
+        _prepare_platform_ports(dev_mode=False)
         start_background_services()
         log.info(
             "Web/API http://127.0.0.1:%s  |  Telegram bot: %s",

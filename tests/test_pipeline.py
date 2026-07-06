@@ -30,7 +30,7 @@ def test_train_and_predict_returns_calibrated_probabilities(synthetic_ohlc):
     os.remove(path)
 
 
-def test_predict_symbol_full_pipeline(synthetic_csv):
+def test_predict_symbol_full_pipeline(synthetic_csv, initialized_db):
     from engine.pipeline import format_result_text, predict_symbol
 
     stages = []
@@ -38,7 +38,7 @@ def test_predict_symbol_full_pipeline(synthetic_csv):
         "TSTUSD", fetch=False, on_progress=lambda stage, msg: stages.append(stage)
     )
 
-    assert {"fetch", "data", "analyze", "train", "decide", "done"} <= set(stages)
+    assert {"fetch", "data", "analyze", "decide", "ml_gate", "done"} <= set(stages)
     from engine.confluence import ACTION_BUY, ACTION_NO_TRADE, ACTION_SELL, ACTION_WAIT, is_trade_action
     decision = result["decision"]
     assert decision["action"] in (ACTION_BUY, ACTION_SELL, ACTION_NO_TRADE, ACTION_WAIT, "BUY", "SELL")

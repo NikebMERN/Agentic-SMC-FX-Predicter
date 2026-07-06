@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import ApprovedRoute from "../components/ApprovedRoute.jsx";
 import MarketChart from "../components/MarketChart.jsx";
+import TradeEntryFeedback, { isTradeAction } from "../components/TradeEntryFeedback.jsx";
 
 const MODES = [
   { value: "mtf", label: "Multi-TF (auto by trading style)" },
@@ -32,8 +33,11 @@ const ACTION_COLOR = {
 
 export default function PredictPage() {
   const { symbol: routeSymbol } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const { setProfile } = useAuth();
+  const autoAnalyzePending = useRef(null);
+  const autoAnalyzeConsumed = useRef(false);
   const [pairs, setPairs] = useState(["EURUSD"]);
   const [symbol, setSymbol] = useState(routeSymbol?.toUpperCase() || "EURUSD");
   const [mode, setMode] = useState("mtf");
@@ -47,10 +51,16 @@ export default function PredictPage() {
   const [strategy, setStrategy] = useState("both");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [calcError, setCalcError] = useState("");
+  const [tradeError, setTradeError] = useState("");
   const [result, setResult] = useState(null);
   const [disclosureAccepted, setDisclosureAccepted] = useState(true);
   const [showDisclosure, setShowDisclosure] = useState(false);
   const [disclaimer, setDisclaimer] = useState("Probabilistic signal — not financial advice.");
+  const [tradeEntryReview, setTradeEntryReview] = useState(null);
+  const [tradeEntryBusy, setTradeEntryBusy] = useState(false);
+  const [profileLoaded, setProfileLoaded] = useState(false);
+  const [autoRunNotice, setAutoRunNotice] = useState("");
 
   useEffect(() => {
     if (routeSymbol) setSymbol(routeSymbol.toUpperCase());
@@ -68,31 +78,43 @@ export default function PredictPage() {
         setDisclosureAccepted(Boolean(me.risk_disclosure_accepted));
         if (me.disclaimer) setDisclaimer(me.disclaimer);
         if (!me.risk_disclosure_accepted) setShowDisclosure(true);
+        setProfileLoaded(true);
       })
       .catch(() => {});
   }, []);
 
-  async function acceptDisclosure() {
-    await api("/me/accept-disclosure", { method: "POST" });
-    setDisclosureAccepted(true);
-    setShowDisclosure(false);
-  }
+  useEffect(() => {
+    const cfg = location.state?.autoAnalyze;
+    if (!cfg) return;
+    autoAnalyzePending.current = cfg;
+    autoAnalyzeConsumed.current = false;
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.state, location.pathname, navigate]);
 
-  async function run() {
+  const executeAnalyze = useCallback(async (overrides = {}) => {
+    const sym = (overrides.symbol ?? symbol).toUpperCase();
+    const hz = overrides.horizon ?? horizon;
+    const md = overrides.mode ?? mode;
+    const strat = overrides.strategy ?? strategy;
+    const fetchLatest = overrides.fetch ?? pullLatest;
+
     if (!disclosureAccepted) {
       setShowDisclosure(true);
       return;
     }
     setLoading(true);
     setError("");
+    setCalcError("");
+    setTradeError("");
     setResult(null);
     setCalc(null);
+    setTradeEntryReview(null);
     try {
-      const body = { symbol, horizon, fetch: pullLatest, strategy };
-      if (mode === "mtf") {
+      const body = { symbol: sym, horizon: hz, fetch: fetchLatest, strategy: strat };
+      if (md === "mtf") {
         body.mtf = true;
       } else {
-        body.interval = mode;
+        body.interval = md;
         body.mtf = false;
       }
       const r = await api("/analyze", {
@@ -101,6 +123,16 @@ export default function PredictPage() {
       });
       setResult(r);
       if (r.calculator) setCalc(r.calculator);
+      if (r.review_id) {
+        const action = r.decision?.action || "";
+        setTradeEntryReview(
+          isTradeAction(action)
+            ? { id: r.review_id, can_record_trade_entry: true, user_trade_entry: null }
+            : null,
+        );
+      } else {
+        setTradeEntryReview(null);
+      }
       if (r.quota) {
         const me = await api("/me");
         setProfile(me);
@@ -108,7 +140,7 @@ export default function PredictPage() {
     } catch (err) {
       if (err.status === 401) {
         setError("Session expired — please sign in again.");
-        navigate("/login", { state: { from: `/predict/${symbol}` } });
+        navigate("/login", { state: { from: `/predict/${sym}` } });
       } else if (err.code === "disclosure_required") {
         setShowDisclosure(true);
         setError(err.message);
@@ -117,26 +149,93 @@ export default function PredictPage() {
       }
     } finally {
       setLoading(false);
+      setAutoRunNotice("");
+    }
+  }, [symbol, horizon, mode, strategy, pullLatest, disclosureAccepted, navigate, setProfile]);
+
+  const runPendingAutoAnalyze = useCallback(async () => {
+    const cfg = autoAnalyzePending.current;
+    if (!cfg || autoAnalyzeConsumed.current || !profileLoaded) return;
+    if (!disclosureAccepted) return;
+
+    autoAnalyzeConsumed.current = true;
+    autoAnalyzePending.current = null;
+
+    const sym = cfg.symbol?.toUpperCase() || symbol;
+    const hz = cfg.horizon || "intraday";
+    const md = cfg.mode || "mtf";
+    const strat = cfg.strategy || "both";
+
+    setSymbol(sym);
+    setHorizon(hz);
+    setMode(md);
+    setStrategy(strat);
+    setAutoRunNotice(`Running fresh analysis for ${sym}…`);
+
+    await executeAnalyze({ symbol: sym, horizon: hz, mode: md, strategy: strat });
+  }, [profileLoaded, disclosureAccepted, symbol, executeAnalyze]);
+
+  useEffect(() => {
+    runPendingAutoAnalyze();
+  }, [runPendingAutoAnalyze]);
+
+  async function acceptDisclosure() {
+    await api("/me/accept-disclosure", { method: "POST" });
+    setDisclosureAccepted(true);
+    setShowDisclosure(false);
+    await runPendingAutoAnalyze();
+  }
+
+  async function run() {
+    await executeAnalyze({});
+  }
+
+  async function submitTradeEntry(reviewId, feedback) {
+    setTradeEntryBusy(true);
+    setTradeError("");
+    try {
+      await api(`/my/reviews/${reviewId}/feedback`, {
+        method: "POST",
+        body: JSON.stringify({ feedback, kind: "trade_entry" }),
+      });
+      setTradeEntryReview((prev) =>
+        prev ? { ...prev, can_record_trade_entry: false, user_trade_entry: feedback } : prev,
+      );
+    } catch (err) {
+      setTradeError(err.message || "Could not save your response.");
+    } finally {
+      setTradeEntryBusy(false);
     }
   }
 
   async function recalc() {
-    if (!d?.entry) return;
+    const decision = result?.decision;
+    if (!decision?.entry) {
+      setCalcError("Entry price is missing — run Analyze again.");
+      return;
+    }
+    const stopLoss = decision.invalidation_price ?? decision.stop_loss;
+    const takeProfit = decision.target_liquidity ?? decision.take_profit;
+    if (stopLoss == null || takeProfit == null) {
+      setCalcError("Stop loss and take profit are required to calculate lot size.");
+      return;
+    }
     setCalcBusy(true);
+    setCalcError("");
     try {
       const body = {
-        symbol,
-        entry: d.entry,
-        stop_loss: d.stop_loss,
-        take_profit: d.take_profit,
-        balance,
-        risk_pct: riskPct,
+        symbol: result.symbol || symbol,
+        entry: decision.entry,
+        stop_loss: stopLoss,
+        take_profit: takeProfit,
+        balance: Number(balance) || 1000,
+        risk_pct: Number(riskPct) || 1,
       };
-      if (riskAmount !== "" && Number(riskAmount) > 0) body.risk_amount = riskAmount;
+      if (riskAmount !== "" && Number(riskAmount) > 0) body.risk_amount = Number(riskAmount);
       const r = await api("/calculator", { method: "POST", body: JSON.stringify(body) });
       setCalc(r);
     } catch (err) {
-      setError(err.message);
+      setCalcError(err.message || "Calculator request failed.");
     } finally {
       setCalcBusy(false);
     }
@@ -208,6 +307,7 @@ export default function PredictPage() {
           </button>
         </div>
         {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
+        {autoRunNotice && <p className="mb-3 text-sm text-sky-300">{autoRunNotice}</p>}
         {result?.quota && <p className="mb-3 text-sm text-slate-400">{result.quota}</p>}
         {d && (
           <div className="mb-4 rounded-lg border border-slate-700 bg-slate-900 p-4">
@@ -269,6 +369,14 @@ export default function PredictPage() {
                 Risk/Reward <span className="font-semibold text-slate-200">1 : {d.risk_reward}</span>
                 {d.stop_basis === "percent_cap" && " · stop capped at the configured max distance"}
               </p>
+            )}
+            {tradeError && <p className="mt-2 text-sm text-red-400">{tradeError}</p>}
+            {tradeEntryReview && (
+              <TradeEntryFeedback
+                review={tradeEntryReview}
+                busy={tradeEntryBusy}
+                onSubmit={submitTradeEntry}
+              />
             )}
             {result?.candle_snapshot?.length > 0 && (
               <div className="mt-3 rounded border border-slate-700 bg-slate-950/60 p-3">
@@ -368,6 +476,7 @@ export default function PredictPage() {
                 {calc?.warning && (
                   <p className="mt-2 text-xs text-amber-300">⚠ {calc.warning}</p>
                 )}
+                {calcError && <p className="mt-2 text-xs text-red-400">{calcError}</p>}
               </div>
             )}
             {Object.keys(scores).length > 0 && (
@@ -395,7 +504,9 @@ export default function PredictPage() {
         )}
         <p className="text-sm text-slate-500">
           Results are tracked in{" "}
-          <Link to="/feedback" className="text-sky-400 hover:underline">My feedback</Link> after the horizon window.
+          <Link to="/history" className="text-sky-400 hover:underline">History</Link>
+          {" · "}
+          <Link to="/feedback" className="text-sky-400 hover:underline">My account</Link>
         </p>
       </div>
     </ApprovedRoute>

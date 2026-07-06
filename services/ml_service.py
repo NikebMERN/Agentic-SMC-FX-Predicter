@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
+from sqlalchemy import func
+
 from db.models import ModelVersion
 from db.session import SessionLocal
 from ml.model_registry import load_bundle, save_bundle
@@ -30,7 +32,10 @@ def get_active_model(
                 ModelVersion.trading_style == trading_style,
                 ModelVersion.status == "ACTIVE",
             )
-            .order_by(ModelVersion.promoted_at.desc().nullslast(), ModelVersion.id.desc())
+            .order_by(
+                func.coalesce(ModelVersion.promoted_at, datetime(1970, 1, 1)).desc(),
+                ModelVersion.id.desc(),
+            )
             .first()
         )
     finally:
@@ -54,11 +59,15 @@ def predict_meta_quality(
     interval: str,
     trading_style: str = "intraday",
 ) -> tuple[float | None, int | None]:
-    bundle = load_active_bundle(symbol, interval, trading_style)
-    if not bundle:
+    try:
+        bundle = load_active_bundle(symbol, interval, trading_style)
+        if not bundle:
+            return None, None
+        prob = predict_quality(bundle, features)
+        return prob, bundle.get("version_id")
+    except Exception:
+        log.exception("Meta quality lookup failed for %s/%s", symbol, interval)
         return None, None
-    prob = predict_quality(bundle, features)
-    return prob, bundle.get("version_id")
 
 
 def save_candidate_version(

@@ -28,7 +28,7 @@ export default defineConfig(({ mode }) => ({
   },
   server: {
     port: 5173,
-    strictPort: true,
+    strictPort: false,
     proxy: {
       ...apiProxy([
         "/login",
@@ -40,7 +40,9 @@ export default defineConfig(({ mode }) => ({
         "/me",
         "/my",
         "/analyze",
+        "/calculator",
         "/pairs",
+        "/notifications",
         "/telegram",
         "/healthz",
       ]),
