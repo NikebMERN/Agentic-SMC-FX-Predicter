@@ -528,6 +528,44 @@ def mark_all_user_notifications_read(user_id):
     return jsonify({"message": f"Marked {updated} as read", "unread_count": unread_count(user_id)})
 
 
+@app.route("/my/confirmations/<int:watch_id>", methods=["GET"])
+@approved_user_required
+def get_confirmation_watch(user_id, watch_id):
+    from services.confirmation_monitor import get_watch
+    data = get_watch(user_id, watch_id)
+    if not data:
+        return jsonify({"error": "Confirmation watch not found"}), 404
+    return jsonify(data)
+
+
+@app.route("/my/confirmations/<int:watch_id>/materialize", methods=["POST"])
+@approved_user_required
+def materialize_confirmation_watch(user_id, watch_id):
+    from services.confirmation_monitor import materialize_review
+    ok, msg, data = materialize_review(user_id, watch_id)
+    if not ok:
+        code = 404 if "not found" in msg.lower() else 409 if "not confirmed" in msg.lower() else 400
+        return jsonify({"error": msg}), code
+    return jsonify({"message": msg, **data})
+
+
+@app.route("/my/confirmations/<int:watch_id>/analyze", methods=["POST"])
+@approved_user_required
+def analyze_confirmation_watch(user_id, watch_id):
+    if not _user_has_disclosure(user_id):
+        return jsonify({
+            "error": "You must accept the risk disclosure before running predictions.",
+            "code": "disclosure_required",
+            "disclaimer": DISCLAIMER,
+        }), 403
+    from services.confirmation_monitor import analyze_fresh
+    ok, msg, data = analyze_fresh(user_id, watch_id)
+    if not ok:
+        code = 404 if "not found" in msg.lower() else 429 if "quota" in msg.lower() else 400
+        return jsonify({"error": msg}), code
+    return jsonify({"message": msg, **data})
+
+
 @app.route("/my/quota-request", methods=["POST"])
 @token_required
 def request_quota(user_id):

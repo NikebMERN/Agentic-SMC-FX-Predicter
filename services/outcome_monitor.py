@@ -106,6 +106,11 @@ def run_cycle():
     if outcomes:
         log.info("Verified %d signal outcome(s)", outcomes)
 
+    from services.confirmation_monitor import scan_watches
+    confirmed = scan_watches()
+    if confirmed:
+        log.info("Notified %d confirmation watch(es)", confirmed)
+
 
 def _loop():
     global _running

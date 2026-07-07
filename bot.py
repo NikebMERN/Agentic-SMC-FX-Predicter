@@ -221,9 +221,15 @@ async def _run_prediction(symbol: str, send_status, send_result, user_id: int | 
             source="telegram",
         )
         text = format_result_text(result, markdown=True)
+        action = (result.get("decision") or {}).get("action", "")
+        if action == "WAIT_FOR_CONFIRMATION":
+            text += (
+                "\n\n_We'll notify you here and in the web app when this setup confirms "
+                "so you can enter the trade._"
+            )
         if user_id and quota_msg:
             text += f"\n\n({quota_msg})"
-        if review:
+        if review and action not in ("NO_TRADE", "WAIT_FOR_CONFIRMATION"):
             text += f"\n\nFeedback due in ~2 hours (review #{review.id}). Use /feedback when ready."
         text += f"\n\n{DISCLAIMER}"
         await send_result(text)

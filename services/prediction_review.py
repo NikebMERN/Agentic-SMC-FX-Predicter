@@ -45,7 +45,6 @@ HORIZON_HOURS = {
 
 BULLISH_ACTIONS = frozenset({ACTION_BUY, "BUY", "BUY_BIAS"})
 BEARISH_ACTIONS = frozenset({ACTION_SELL, "SELL", "SELL_BIAS"})
-NON_TRADE_ACTIONS = frozenset({ACTION_NO_TRADE, ACTION_WAIT, "NO_TRADE"})
 
 
 def parse_horizon(raw: str | None) -> tuple[str, int]:
@@ -245,10 +244,12 @@ def create_review(
     try:
         horizon_key, horizon_hours = parse_horizon(horizon)
         now = datetime.utcnow()
-        due = now + timedelta(hours=FEEDBACK_DUE_HOURS)
+        action_key = (predicted_action or "").upper()
+        trade_signal = is_trade_signal(action_key)
+        due = (now + timedelta(hours=FEEDBACK_DUE_HOURS)) if trade_signal else None
         evaluate_at = now + timedelta(hours=horizon_hours)
         entry = float(entry_price or 0)
-        if entry <= 0 and predicted_action not in NON_TRADE_ACTIONS:
+        if entry <= 0 and action_key not in NON_TRADE_ACTIONS:
             entry = 0.0
 
         row = PredictionReview(
@@ -277,7 +278,7 @@ def create_review(
             feature_schema_version=feature_schema_version or "v1",
             predicted_at=now,
             feedback_due_at=due,
-            feedback_reminder_sent=False,
+            feedback_reminder_sent=not trade_signal,
             evaluate_at=evaluate_at,
             features_json=json.dumps(features or {}),
             status="pending",

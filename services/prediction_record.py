@@ -18,7 +18,7 @@ def record_prediction_from_result(
     entry = decision.get("entry")
     if entry is None and result.get("analysis_summary"):
         entry = result["analysis_summary"].get("price")
-    return create_review(
+    review = create_review(
         signal_id=signal_id,
         user_id=user_id,
         symbol=result.get("symbol", ""),
@@ -51,3 +51,7 @@ def record_prediction_from_result(
         snapshot_records=result.get("candle_snapshot"),
         source=source,
     )
+    if review and user_id:
+        from services.confirmation_monitor import maybe_create_watch
+        maybe_create_watch(user_id=user_id, review=review, result=result)
+    return review

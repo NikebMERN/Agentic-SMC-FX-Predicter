@@ -13,6 +13,7 @@ from services.feedback_fields import (
     TRADE_ENTRY_VALUES,
     split_feedback_fields,
 )
+from services.prediction_review import is_trade_signal
 from utils.logger import get_logger
 
 log = get_logger("services.user_feedback")
@@ -45,6 +46,8 @@ def submit_feedback(
             return False, "Prediction not found", None
         if review.user_id != user_id:
             return False, "Not your prediction", None
+        if not is_trade_signal(review.predicted_action):
+            return False, "Feedback is not collected for NO_TRADE or WAIT_FOR_CONFIRMATION signals", None
 
         existing = (
             db.query(UserFeedback)

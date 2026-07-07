@@ -1,3 +1,7 @@
+import { isTradeAction } from "../utils/tradeActions.js";
+
+export { isTradeAction };
+
 const TRADE_ENTRY_OPTIONS = [
   {
     value: "ENTERED",
@@ -18,10 +22,6 @@ const TRADE_ENTRY_LABELS = {
 
 export function tradeEntryLabel(feedback) {
   return TRADE_ENTRY_LABELS[feedback] || feedback;
-}
-
-export function isTradeAction(action) {
-  return action && !["NO_TRADE", "WAIT_FOR_CONFIRMATION"].includes(action);
 }
 
 export default function TradeEntryFeedback({ review, busy, onSubmit, compact = false }) {

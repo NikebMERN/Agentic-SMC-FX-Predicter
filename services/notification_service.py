@@ -194,6 +194,34 @@ def notify_feedback_submitted(
     )
 
 
+def notify_confirmation_ready(
+    user_id: int,
+    *,
+    watch_id: int,
+    symbol: str,
+    confirmed_action: str,
+    wait_reason: str,
+    confirmation_reason: str,
+) -> None:
+    create_notification(
+        user_id,
+        kind="confirmation_ready",
+        title=f"Ready to enter — {symbol} {confirmed_action}",
+        body=(
+            f"Your {symbol} setup confirmed as {confirmed_action}. "
+            f"{confirmation_reason or 'You can review levels and record whether you entered.'}"
+        ),
+        link=f"/confirm/{watch_id}",
+        meta={
+            "watch_id": watch_id,
+            "symbol": symbol,
+            "confirmed_action": confirmed_action,
+            "wait_reason": wait_reason,
+            "confirmation_reason": confirmation_reason,
+        },
+    )
+
+
 def notify_feedback_due(user_id: int, *, prediction_id: int, symbol: str, predicted_action: str) -> None:
     create_notification(
         user_id,

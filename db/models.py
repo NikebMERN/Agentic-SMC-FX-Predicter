@@ -485,6 +485,35 @@ class Notification(Base):
     )
 
 
+class ConfirmationWatch(Base):
+    """Track WAIT_FOR_CONFIRMATION setups until they confirm into a tradeable bias."""
+    __tablename__ = 'confirmation_watches'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    source_review_id = Column(Integer, ForeignKey('prediction_reviews.id', ondelete='CASCADE'), nullable=False, index=True)
+    confirmed_review_id = Column(Integer, ForeignKey('prediction_reviews.id', ondelete='SET NULL'), nullable=True, index=True)
+    symbol = Column(String(16), nullable=False, index=True)
+    interval = Column(String(16), default='60min')
+    horizon = Column(String(16), default='intraday')
+    strategy_mode = Column(String(16), default='both')
+    trading_style = Column(String(16), default='intraday')
+    params_json = Column(Text, nullable=True)
+    status = Column(String(16), default='watching', nullable=False, index=True)
+    wait_reason = Column(Text, nullable=True)
+    confirmed_action = Column(String(32), nullable=True)
+    confirmation_reason = Column(Text, nullable=True)
+    confirmed_snapshot_json = Column(Text, nullable=True)
+    notified_at = Column(DateTime, nullable=True)
+    last_checked_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index('ix_confirmation_watches_user_status', 'user_id', 'status'),
+    )
+
+
 class AdminLog(Base):
     __tablename__ = 'admin_logs'
     id = Column(Integer, primary_key=True)

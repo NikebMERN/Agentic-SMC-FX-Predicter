@@ -104,6 +104,39 @@ def test_feedback_trade_entry_and_outcome(client, approved_user):
     assert outcome.get_json().get("feedback") == "SUCCESSFUL"
 
 
+def test_feedback_rejected_for_no_trade_and_wait(client, approved_user):
+    from datetime import datetime, timedelta
+    from db.session import SessionLocal
+    from db.models import PredictionReview
+
+    headers = {"Authorization": f"Bearer {approved_user['token']}"}
+    db = SessionLocal()
+    try:
+        for action in ("NO_TRADE", "WAIT_FOR_CONFIRMATION"):
+            review = PredictionReview(
+                user_id=approved_user["id"],
+                symbol="EURUSD",
+                interval="60min",
+                predicted_action=action,
+                predicted_confidence=0.5,
+                entry_price=1.1,
+                predicted_at=datetime.utcnow(),
+                evaluate_at=datetime.utcnow() + timedelta(hours=2),
+                status="pending",
+            )
+            db.add(review)
+            db.commit()
+            db.refresh(review)
+            res = client.post(
+                f"/my/reviews/{review.id}/feedback",
+                json={"feedback": "SUCCESSFUL", "kind": "outcome"},
+                headers=headers,
+            )
+            assert res.status_code == 400, (action, res.get_json())
+    finally:
+        db.close()
+
+
 def test_trade_entry_not_required_for_no_trade(client, approved_user):
     from datetime import datetime, timedelta
     from db.session import SessionLocal
@@ -133,6 +166,40 @@ def test_trade_entry_not_required_for_no_trade(client, approved_user):
     listed = client.get("/my/reviews?limit=5", headers=headers)
     row = next(r for r in listed.get_json()["reviews"] if r["id"] == rid)
     assert row["feedback_required"] is False
+    assert row["can_record_trade_entry"] is False
+    assert row["can_record_outcome"] is False
+
+
+def test_wait_for_confirmation_not_scheduled_for_feedback(client, approved_user):
+    from datetime import datetime, timedelta
+    from db.session import SessionLocal
+    from db.models import PredictionReview
+
+    db = SessionLocal()
+    try:
+        review = PredictionReview(
+            user_id=approved_user["id"],
+            symbol="EURUSD",
+            interval="60min",
+            predicted_action="WAIT_FOR_CONFIRMATION",
+            predicted_confidence=0.5,
+            entry_price=1.1,
+            predicted_at=datetime.utcnow(),
+            evaluate_at=datetime.utcnow() + timedelta(hours=2),
+            status="pending",
+        )
+        db.add(review)
+        db.commit()
+        db.refresh(review)
+        rid = review.id
+    finally:
+        db.close()
+
+    headers = {"Authorization": f"Bearer {approved_user['token']}"}
+    row = next(
+        r for r in client.get("/my/reviews?limit=10", headers=headers).get_json()["reviews"]
+        if r["id"] == rid
+    )
     assert row["can_record_trade_entry"] is False
     assert row["can_record_outcome"] is False
 

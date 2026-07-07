@@ -10,6 +10,7 @@ import HistoryPage from "./pages/HistoryPage.jsx";
 import PredictPage from "./pages/PredictPage.jsx";
 import TelegramPage from "./pages/TelegramPage.jsx";
 import AlertsPage from "./pages/AlertsPage.jsx";
+import ConfirmPage from "./pages/ConfirmPage.jsx";
 
 export default function App() {
   return (
@@ -57,6 +58,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <AlertsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/confirm/:id"
+              element={
+                <ProtectedRoute>
+                  <ConfirmPage />
                 </ProtectedRoute>
               }
             />
