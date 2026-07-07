@@ -1,7 +1,5 @@
-{
-	email {$ACME_EMAIL}
-}
-
-{$DOMAIN::80} {
+# Set DOMAIN=example.com in production to enable Caddy automatic HTTPS.
+# With DOMAIN unset, this falls back to plain HTTP on :80 for local/LAN testing.
+{$DOMAIN:http://:80} {
 	reverse_proxy app:5000
 }

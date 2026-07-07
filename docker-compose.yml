@@ -37,6 +37,7 @@ services:
       MYSQL_HOST: db
       MYSQL_PORT: "3306"
       RATELIMIT_STORAGE_URI: redis://redis:6379/0
+      REDIS_URL: redis://redis:6379/0
     expose:
       - "5000"
     volumes:
@@ -51,6 +52,29 @@ services:
       retries: 3
       start_period: 40s
 
+  worker:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: .env
+    command: ["python", "run.py", "worker"]
+    environment:
+      MYSQL_HOST: db
+      MYSQL_PORT: "3306"
+      RATELIMIT_STORAGE_URI: redis://redis:6379/0
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./data:/app/data
+      - ./model:/app/model
+      - ./logs:/app/logs
+      - ./backups:/app/backups
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -59,10 +83,10 @@ services:
       - "443:443"
     environment:
       DOMAIN: ${DOMAIN:-}
-      ACME_EMAIL: ${ACME_EMAIL:-}
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
+      - caddy_config:/config
     depends_on:
       app:
         condition: service_healthy
@@ -91,3 +115,4 @@ services:
 volumes:
   mysql_data:
   caddy_data:
+  caddy_config:

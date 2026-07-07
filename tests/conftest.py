@@ -12,6 +12,7 @@ import sys
 # runner) can never lock each other out on Windows.
 _TEST_DB = f"test_smc_{os.getpid()}.db"
 os.environ["DATABASE_URL"] = f"sqlite:///./{_TEST_DB}"
+os.environ["APP_ENV"] = "development"
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
 os.environ["ADMIN_EMAIL"] = "admin@test.local"
 os.environ["ADMIN_PASSWORD"] = "test-admin-pass"

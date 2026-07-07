@@ -9,7 +9,13 @@ from flask_limiter.util import get_remote_address  # type: ignore
 
 from engine.data import normalize_symbol, validate_interval, supported_intervals
 from engine.pipeline import predict_symbol
-from utils.config import IS_DEVELOPMENT, CORS_ORIGINS, INTERVAL
+from utils.config import (
+    CORS_ORIGINS,
+    INTERVAL,
+    IS_DEVELOPMENT,
+    MARKET_STREAMS_ENABLED,
+    RATELIMIT_STORAGE_URI,
+)
 from utils.logger import get_logger
 from utils.settings import get_supported_pairs
 from utils import settings as runtime_settings
@@ -39,7 +45,7 @@ limiter = Limiter(
     get_remote_address,
     app=app,
     default_limits=["200 per minute"],
-    storage_uri=os.getenv("RATELIMIT_STORAGE_URI", "memory://"),
+    storage_uri=RATELIMIT_STORAGE_URI,
 )
 
 DATA_FOLDER = "data"
@@ -945,21 +951,69 @@ def list_exports(user_id):
 
 # ---------------- LIVE MARKET ----------------
 @app.route("/api/market/live/<pair>", methods=["GET"])
-def market_live(pair):
+@approved_user_required
+def market_live(user_id, pair):
+    if not MARKET_STREAMS_ENABLED:
+        return jsonify({"error": "Live market streams are disabled."}), 503
     from services.oanda_stream import get_latest_quote
-    sym = normalize_symbol(pair)
+    try:
+        sym = _validate_market_pair(pair)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     quote = get_latest_quote(sym)
-    if not quote:
-        from services.oanda_stream import subscribe
-        subscribe(sym, lambda _: None)
-        quote = get_latest_quote(sym)
     return jsonify({"pair": sym, "quote": quote})
+
+
+def _validate_market_pair(pair: str) -> str:
+    sym = normalize_symbol(pair)
+    supported = {normalize_symbol(p) for p in get_supported_pairs()}
+    if sym not in supported:
+        raise ValueError(f"Unsupported currency pair: {sym}")
+    return sym
+
+
+def _websocket_user_id() -> int | None:
+    token = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    token = token or (request.args.get("token") or "").strip()
+    if not token:
+        return None
+    try:
+        import jwt  # type: ignore
+        from utils.security import SECRET_KEY
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        user_id = payload.get("user_id")
+    except Exception:
+        return None
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return None
+        status = getattr(user, "status", "active" if user.is_active else "pending")
+        if status != "active" or not user.is_active:
+            return None
+        return int(user.id)
+    finally:
+        db.close()
 
 
 @sock.route("/api/market/stream/<pair>")
 def market_stream(ws, pair):
     import json as _json
-    sym = normalize_symbol(pair)
+    if not MARKET_STREAMS_ENABLED or not _websocket_user_id():
+        ws.send(_json.dumps({"error": "Authentication required"}))
+        ws.close()
+        return
+    try:
+        sym = _validate_market_pair(pair)
+    except ValueError as exc:
+        ws.send(_json.dumps({"error": str(exc)}))
+        ws.close()
+        return
     from services.oanda_stream import subscribe, unsubscribe
 
     def on_tick(tick):
@@ -968,7 +1022,12 @@ def market_stream(ws, pair):
         except Exception:
             pass
 
-    subscribe(sym, on_tick)
+    try:
+        subscribe(sym, on_tick)
+    except RuntimeError as exc:
+        ws.send(_json.dumps({"error": str(exc)}))
+        ws.close()
+        return
     try:
         while True:
             ws.receive(timeout=30)
@@ -980,4 +1039,4 @@ def market_stream(ws, pair):
 
 # ---------------- RUN ----------------
 if __name__ == "__main__":
-    app.run(debug=True, use_reloader=False)
+    app.run(debug=IS_DEVELOPMENT, use_reloader=False)

@@ -24,7 +24,8 @@ def _ensure_npm_deps(cwd: str) -> bool:
         return False
     node_modules = os.path.join(cwd, "node_modules")
     if not os.path.isdir(node_modules):
-        subprocess.run([npm, "install"], cwd=cwd, check=True)
+        command = "ci" if os.path.isfile(os.path.join(cwd, "package-lock.json")) else "install"
+        subprocess.run([npm, command], cwd=cwd, check=True)
     return True
 
 
@@ -43,7 +44,7 @@ def _vite_dev_process(cwd: str) -> subprocess.Popen | None:
 
 
 def build_admin_frontend(force: bool = False) -> bool:
-    """npm install + vite build. Returns True on success."""
+    """npm ci + vite build. Returns True on success."""
     if not os.path.isdir(ADMIN_FRONTEND):
         print("admin-frontend/ not found", file=sys.stderr)
         return False
@@ -57,7 +58,7 @@ def build_admin_frontend(force: bool = False) -> bool:
         return False
 
     print("Building React admin panel...")
-    subprocess.run([npm, "install"], cwd=ADMIN_FRONTEND, check=True)
+    subprocess.run([npm, "ci"], cwd=ADMIN_FRONTEND, check=True)
     subprocess.run([npm, "run", "build"], cwd=ADMIN_FRONTEND, check=True)
     print(f"Admin UI built -> {ADMIN_DIST}")
     return os.path.isfile(os.path.join(ADMIN_DIST, "index.html"))
@@ -78,7 +79,7 @@ def build_smc_frontend(force: bool = False) -> bool:
         return False
 
     print("Building user web app...")
-    subprocess.run([npm, "install"], cwd=SMC_FRONTEND, check=True)
+    subprocess.run([npm, "ci"], cwd=SMC_FRONTEND, check=True)
     subprocess.run([npm, "run", "build"], cwd=SMC_FRONTEND, check=True)
     print(f"User app built -> {SMC_DIST}")
     return os.path.isfile(os.path.join(SMC_DIST, "index.html"))

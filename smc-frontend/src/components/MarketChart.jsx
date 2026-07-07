@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { getToken } from "../api/client";
 
 export default function MarketChart({ pair, candles = [], height = 320, lines = [] }) {
   const [live, setLive] = useState(null);
@@ -6,8 +7,12 @@ export default function MarketChart({ pair, candles = [], height = 320, lines = 
 
   useEffect(() => {
     if (!pair) return undefined;
+    const token = getToken();
+    if (!token) return undefined;
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${window.location.host}/api/market/stream/${pair}`);
+    const ws = new WebSocket(
+      `${proto}://${window.location.host}/api/market/stream/${pair}?token=${encodeURIComponent(token)}`
+    );
     wsRef.current = ws;
     ws.onmessage = (ev) => {
       try {

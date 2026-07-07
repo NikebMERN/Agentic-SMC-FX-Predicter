@@ -9,7 +9,13 @@ from collections import defaultdict
 
 import requests
 
-from utils.config import OANDA_API_KEY, OANDA_ENV
+from utils.config import (
+    APP_ENV,
+    MARKET_STREAMS_ENABLED,
+    MAX_MARKET_STREAMS,
+    OANDA_API_KEY,
+    OANDA_ENV,
+)
 from utils.logger import get_logger
 
 log = get_logger("services.oanda_stream")
@@ -39,13 +45,24 @@ def get_latest_quote(pair: str) -> dict | None:
 
 
 def subscribe(pair: str, callback) -> None:
+    if not MARKET_STREAMS_ENABLED:
+        raise RuntimeError("Live market streams are disabled.")
     sym = pair.upper()
     with _lock:
         _subscribers[sym].add(callback)
         if sym not in _stream_threads or not _stream_threads[sym].is_alive():
-            t = threading.Thread(target=_stream_loop, args=(sym,), daemon=True, name=f"oanda-{sym}")
-            _stream_threads[sym] = t
-            t.start()
+            active = [thread for thread in _stream_threads.values() if thread.is_alive()]
+            if len(active) >= MAX_MARKET_STREAMS:
+                _subscribers[sym].discard(callback)
+                raise RuntimeError("Live market stream limit reached.")
+            thread = threading.Thread(
+                target=_stream_loop,
+                args=(sym,),
+                daemon=True,
+                name=f"oanda-{sym}",
+            )
+            _stream_threads[sym] = thread
+            thread.start()
 
 
 def unsubscribe(pair: str, callback) -> None:
@@ -57,23 +74,45 @@ def unsubscribe(pair: str, callback) -> None:
 def _broadcast(sym: str, tick: dict):
     with _lock:
         _latest[sym] = tick
-        subs = list(_subscribers.get(sym, []))
-    for cb in subs:
+        subscribers = list(_subscribers.get(sym, []))
+    for callback in subscribers:
         try:
-            cb(tick)
+            callback(tick)
         except Exception:
             pass
 
 
+def _has_subscribers(sym: str) -> bool:
+    with _lock:
+        return bool(_subscribers.get(sym))
+
+
+def _cleanup_stream(sym: str) -> None:
+    with _lock:
+        if not _subscribers.get(sym):
+            _subscribers.pop(sym, None)
+            _stream_threads.pop(sym, None)
+
+
 def _stream_loop(sym: str):
     if not OANDA_API_KEY:
-        # Mock ticks for dev without OANDA
+        if APP_ENV == "production":
+            log.warning("OANDA_API_KEY missing - live stream disabled for %s in production", sym)
+            _cleanup_stream(sym)
+            return
         price = 1.1000
-        while True:
+        while _has_subscribers(sym):
             price += 0.00005
-            tick = {"pair": sym, "bid": price - 0.0001, "ask": price + 0.0001, "mid": price, "time": time.time()}
+            tick = {
+                "pair": sym,
+                "bid": price - 0.0001,
+                "ask": price + 0.0001,
+                "mid": price,
+                "time": time.time(),
+            }
             _broadcast(sym, tick)
             time.sleep(1)
+        _cleanup_stream(sym)
         return
 
     instrument = _instrument(sym)
@@ -81,10 +120,12 @@ def _stream_loop(sym: str):
     headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
     params = {"instruments": instrument}
 
-    while True:
+    while _has_subscribers(sym):
         try:
             with requests.get(url, headers=headers, params=params, stream=True, timeout=60) as resp:
                 for line in resp.iter_lines():
+                    if not _has_subscribers(sym):
+                        break
                     if not line:
                         continue
                     data = json.loads(line.decode("utf-8"))
@@ -103,5 +144,6 @@ def _stream_loop(sym: str):
                     }
                     _broadcast(sym, tick)
         except Exception as exc:
-            log.warning("OANDA stream error for %s: %s — retrying", sym, exc)
+            log.warning("OANDA stream error for %s: %s - retrying", sym, exc)
             time.sleep(5)
+    _cleanup_stream(sym)

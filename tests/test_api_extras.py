@@ -19,6 +19,10 @@ def test_close_trade_requires_auth(client):
     assert client.post("/close-trade/1").status_code == 401
 
 
+def test_live_market_quote_requires_auth(client):
+    assert client.get("/api/market/live/EURUSD").status_code == 401
+
+
 def test_close_trade_rejects_other_users_trade(client, admin_token):
     from db.session import SessionLocal
     from db.models import User, Account, Trade

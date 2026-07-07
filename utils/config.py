@@ -36,6 +36,10 @@ OANDA_ENV = os.getenv("OANDA_ENV", "practice").lower()
 # Which provider to use: "auto" tries OANDA first, then Alpha Vantage,
 # then the cached CSV. "oanda" / "alphavantage" pin one provider.
 DATA_PROVIDER = os.getenv("DATA_PROVIDER", "auto").lower()
+ALLOW_CACHE_ONLY_PRODUCTION = (
+    os.getenv("ALLOW_CACHE_ONLY_PRODUCTION", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 
 # All candle timestamps are normalised to this clock (the ICT/kill-zone
 # convention is New York time; Alpha Vantage already ships US/Eastern,
@@ -66,6 +70,7 @@ API_PORT = int(os.getenv("API_PORT", "5000"))
 CORS_ORIGINS = [
     o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()
 ]
+RATELIMIT_STORAGE_URI = os.getenv("RATELIMIT_STORAGE_URI", "memory://")
 
 # -----------------------------
 # Admin bootstrap
@@ -118,3 +123,12 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 # Local Data Folder
 # -----------------------------
 DATA_FOLDER = os.path.join(os.getcwd(), "data")  # points to ./data folder
+
+# -----------------------------
+# Live market stream relay
+# -----------------------------
+MARKET_STREAMS_ENABLED = (
+    os.getenv("MARKET_STREAMS_ENABLED", "true").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
+MAX_MARKET_STREAMS = int(os.getenv("MAX_MARKET_STREAMS", "20"))

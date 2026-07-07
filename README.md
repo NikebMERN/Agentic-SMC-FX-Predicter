@@ -103,7 +103,7 @@ the Telegram bot, or the CLI, every request runs the same pipeline
 The admin UI lives in [`admin-frontend/`](admin-frontend/) (Vite + React + Tailwind).
 It is built to `static/admin/` and served by Flask at **`http://localhost:5000/admin`**.
 
-Requires **Node.js/npm** for the first build (`python run.py` runs `npm install && npm run build` automatically).
+Requires **Node.js/npm** for the first build (`python run.py` runs `npm ci && npm run build` automatically).
 
 Set `ADMIN_EMAIL` + `ADMIN_PASSWORD` in `.env` — the admin account is created on startup.
 Everything is controlled from the panel:
@@ -137,7 +137,7 @@ Logged-in admins can also change their password from the Settings tab.
 pip install -r requirements-dev.txt
 pytest tests/            # unit + API tests
 
-docker compose up -d     # MySQL + Redis + app + Caddy (HTTPS when DOMAIN set) + daily DB backups
+docker compose up -d     # MySQL + Redis + API + worker + Caddy (HTTPS when DOMAIN set) + daily DB backups
 ```
 
 CI runs the suite on every push (`.github/workflows/ci.yml`).
@@ -154,14 +154,17 @@ Before going live, set in `.env`:
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | strong bootstrap credentials |
 | `DATABASE_URL` or `MYSQL_*` | MySQL (not SQLite) |
 | `SMTP_*` | working mail server for password reset |
-| `DOMAIN` / `ACME_EMAIL` | public hostname + Let's Encrypt email (Docker/Caddy) |
+| `DOMAIN` | public hostname for Docker/Caddy automatic HTTPS |
 | `OANDA_API_KEY` or `ALPHA_VANTAGE_API_KEY` | at least one data provider |
+| `RATELIMIT_STORAGE_URI` | Redis, not `memory://` |
 
-On startup in production, `run.py` logs a warning banner if any of the above are misconfigured (CORS `*`, missing SMTP, SQLite DB, weak admin password).
+On startup in production, `run.py` now refuses to boot if required production settings are unsafe (CORS `*`, missing SMTP, SQLite DB, weak admin password, memory-only rate limits, or no live data provider key unless `ALLOW_CACHE_ONLY_PRODUCTION=true` is explicitly set).
 
 ### HTTPS (Docker)
 
-With `DOMAIN=your-domain.com` and `ACME_EMAIL=you@example.com` in `.env`, Caddy terminates TLS and proxies to the app container. Without `DOMAIN`, Caddy serves HTTP on port 80 for LAN testing. The app container is not published directly — only Caddy exposes 80/443.
+With `DOMAIN=your-domain.com` in `.env`, Caddy terminates TLS and proxies to the app container. Without `DOMAIN`, Caddy serves HTTP on port 80 for LAN testing. The app container is not published directly — only Caddy exposes 80/443.
+
+The Docker stack runs the HTTP API and background jobs separately: `app` serves Flask only, while `worker` runs monitors, scheduled retraining, alert scans, and the Telegram supervisor.
 
 ### Database backup & restore
 

@@ -181,6 +181,46 @@ def _run_alembic():
         log.warning("Alembic upgrade skipped or failed: %s", exc)
 
 
+def _stamp_alembic_head_if_unversioned(engine) -> None:
+    """Mark create_all-based legacy schemas as the current Alembic baseline."""
+    try:
+        from sqlalchemy import inspect
+        inspector = inspect(engine)
+        if "alembic_version" in set(inspector.get_table_names()):
+            return
+        from alembic.config import Config
+        from alembic import command
+        ini = os.path.join(os.path.dirname(__file__), "alembic.ini")
+        if not os.path.exists(ini):
+            return
+        cfg = Config(ini)
+        command.stamp(cfg, "head")
+        log.info("Alembic version stamped at head for existing schema.")
+    except Exception as exc:
+        log.warning("Alembic stamp skipped or failed: %s", exc)
+
+
+def _verify_schema(engine) -> None:
+    """Fail if the database is missing ORM tables or columns after startup sync."""
+    from sqlalchemy import inspect
+    from db.session import Base
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    problems: list[str] = []
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            problems.append(f"missing table {table.name}")
+            continue
+        existing_columns = {col["name"] for col in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name not in existing_columns:
+                problems.append(f"missing column {table.name}.{column.name}")
+    if problems:
+        preview = "; ".join(problems[:12])
+        extra = "" if len(problems) <= 12 else f"; +{len(problems) - 12} more"
+        raise RuntimeError(f"Database schema verification failed: {preview}{extra}")
+
+
 def _bootstrap_admin():
     """Create (or promote) the admin account from ADMIN_EMAIL/ADMIN_PASSWORD."""
     from utils.config import ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_USERNAME
@@ -335,11 +375,14 @@ def init_database() -> bool:
     """Create tables if the database is reachable. Non-fatal on failure -
     prediction endpoints work without MySQL."""
     try:
+        from utils.config import APP_ENV
         from db.session import Base, engine
         import db.models  # noqa: F401  (registers the models)
         Base.metadata.create_all(bind=engine)
         _migrate_schema(engine)
         _run_alembic()
+        _verify_schema(engine)
+        _stamp_alembic_head_if_unversioned(engine)
         _bootstrap_admin()
         _seed_default_settings()
         _seed_threshold_versions()
@@ -347,40 +390,74 @@ def init_database() -> bool:
         log.info("Database tables ready.")
         return True
     except Exception as exc:
+        if APP_ENV == "production":
+            raise RuntimeError(f"Database initialization failed in production: {exc}") from exc
         log.warning("Database unavailable (%s) - auth/trade routes will fail until it is up.", exc)
         return False
 
 
-def log_production_warnings() -> None:
-    """Log a single banner of production misconfiguration (warn only, no crash)."""
+def production_config_issues() -> list[str]:
+    """Return production misconfiguration issues that must be fixed before boot."""
     from utils.config import (
+        ALLOW_CACHE_ONLY_PRODUCTION,
+        ALPHA_VANTAGE_API_KEY,
         ADMIN_PASSWORD,
         APP_ENV,
         CORS_ORIGINS,
+        DATA_PROVIDER,
         DATABASE_URL,
+        OANDA_API_KEY,
+        RATELIMIT_STORAGE_URI,
     )
     from utils.mailer import is_configured
     from utils.security import is_weak_password
 
     if APP_ENV != "production":
-        return
+        return []
 
     issues: list[str] = []
     if CORS_ORIGINS == ["*"]:
-        issues.append("CORS_ORIGINS is set to '*' — restrict to your domain in production.")
+        issues.append("CORS_ORIGINS is set to '*' - restrict to your domain in production.")
     if not is_configured():
-        issues.append("SMTP is not configured — password reset emails will fail.")
+        issues.append("SMTP is not configured - password reset emails will fail.")
     if DATABASE_URL and DATABASE_URL.startswith("sqlite"):
-        issues.append("DATABASE_URL uses SQLite — use MySQL for production.")
+        issues.append("DATABASE_URL uses SQLite - use MySQL for production.")
     if not ADMIN_PASSWORD or is_weak_password(ADMIN_PASSWORD):
-        issues.append("ADMIN_PASSWORD is missing or weak — set a strong bootstrap password.")
+        issues.append("ADMIN_PASSWORD is missing or weak - set a strong bootstrap password.")
+    if RATELIMIT_STORAGE_URI == "memory://":
+        issues.append("RATELIMIT_STORAGE_URI uses memory:// - use Redis in production.")
+    provider = (DATA_PROVIDER or "auto").lower()
+    if provider == "oanda" and not OANDA_API_KEY:
+        issues.append("DATA_PROVIDER=oanda but OANDA_API_KEY is missing.")
+    if provider == "alphavantage" and not ALPHA_VANTAGE_API_KEY:
+        issues.append("DATA_PROVIDER=alphavantage but ALPHA_VANTAGE_API_KEY is missing.")
+    if provider == "auto" and not (OANDA_API_KEY or ALPHA_VANTAGE_API_KEY or ALLOW_CACHE_ONLY_PRODUCTION):
+        issues.append(
+            "No live data provider key is configured - set OANDA_API_KEY or "
+            "ALPHA_VANTAGE_API_KEY, or explicitly set ALLOW_CACHE_ONLY_PRODUCTION=true."
+        )
+    return issues
 
+
+def log_production_warnings() -> None:
+    """Log a single banner of production misconfiguration."""
+    issues = production_config_issues()
     if not issues:
         return
 
     log.warning(
         "Production configuration warnings:\n%s",
         "\n".join(f"  • {item}" for item in issues),
+    )
+
+
+def assert_production_ready() -> None:
+    issues = production_config_issues()
+    if not issues:
+        return
+    raise RuntimeError(
+        "Unsafe production configuration:\n"
+        + "\n".join(f"  - {item}" for item in issues)
     )
 
 
@@ -474,6 +551,11 @@ def _assert_port_free():
 
 def serve_api():
     log_production_warnings()
+    try:
+        assert_production_ready()
+    except RuntimeError as exc:
+        log.error("%s", exc)
+        raise
     try:
         _assert_port_free()
     except RuntimeError as exc:
@@ -680,11 +762,25 @@ def start_bot_thread() -> threading.Thread | None:
     return thread
 
 
+def cmd_worker() -> None:
+    """Run schedulers, monitors, and Telegram bot without serving HTTP."""
+    assert_production_ready()
+    init_database()
+    start_background_services()
+    log.info("Background worker running - monitors, scheduler, and Telegram supervisor active.")
+    try:
+        while True:
+            time.sleep(5)
+    except KeyboardInterrupt:
+        log.info("Worker shutting down.")
+
+
 def cmd_all(build_frontend: bool = True, dev_frontend: bool = False):
     from utils.config import IS_DEVELOPMENT, TELEGRAM_BOT_TOKEN
 
     dev_mode = dev_frontend or IS_DEVELOPMENT
     force_build = dev_mode
+    assert_production_ready()
 
     if build_frontend:
         from scripts.frontend import build_admin_frontend, build_smc_frontend
@@ -865,7 +961,13 @@ def main():
         help="confluence mode: both (default), smc only, or ict only",
     )
 
-    sub.add_parser("api", help="API server only")
+    p_api = sub.add_parser("api", help="API server only")
+    p_api.add_argument(
+        "--with-background",
+        action="store_true",
+        help="also start monitors, scheduler, and Telegram supervisor",
+    )
+    sub.add_parser("worker", help="background services only")
     sub.add_parser("bot", help="Telegram bot only")
     sub.add_parser("refresh", help="refresh data + models for all pairs")
     sub.add_parser("build-admin", help="build React admin panel (admin-frontend)")
@@ -884,16 +986,20 @@ def main():
         cmd_predict(args)
     elif args.command == "api":
         from utils.config import TELEGRAM_BOT_TOKEN
+        assert_production_ready()
         init_database()
         _prepare_platform_ports(dev_mode=False)
-        start_background_services()
+        if args.with_background:
+            start_background_services()
         log.info(
             "Web/API http://127.0.0.1:%s  |  Telegram bot: %s",
             API_PORT,
-            "enabled (parallel)" if TELEGRAM_BOT_TOKEN else "disabled",
+            "enabled (parallel)" if (args.with_background and TELEGRAM_BOT_TOKEN) else "separate/disabled",
         )
         api_thread = _start_api_thread()
         _wait_for_platform(api_thread, dev_mode=False)
+    elif args.command == "worker":
+        cmd_worker()
     elif args.command == "bot":
         from bot import run_bot
         run_bot()

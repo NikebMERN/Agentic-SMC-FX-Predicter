@@ -2,7 +2,8 @@ FROM python:3.12-slim AS admin-build
 WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm && rm -rf /var/lib/apt/lists/*
 COPY admin-frontend/package.json admin-frontend/
-RUN cd admin-frontend && npm install
+COPY admin-frontend/package-lock.json admin-frontend/
+RUN cd admin-frontend && npm ci
 COPY admin-frontend/ admin-frontend/
 RUN cd admin-frontend && npm run build
 
@@ -10,7 +11,8 @@ FROM python:3.12-slim AS smc-build
 WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm && rm -rf /var/lib/apt/lists/*
 COPY smc-frontend/package.json smc-frontend/
-RUN cd smc-frontend && npm install
+COPY smc-frontend/package-lock.json smc-frontend/
+RUN cd smc-frontend && npm ci
 COPY smc-frontend/ smc-frontend/
 RUN cd smc-frontend && npm run build
 
@@ -29,4 +31,4 @@ VOLUME ["/app/data", "/app/model", "/app/logs", "/app/backups"]
 
 EXPOSE 5000
 
-CMD ["python", "run.py", "start", "--no-build"]
+CMD ["python", "run.py", "api"]
