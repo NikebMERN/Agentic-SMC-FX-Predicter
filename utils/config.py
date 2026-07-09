@@ -10,6 +10,15 @@ from dotenv import load_dotenv  # type: ignore
 
 from utils.pairs import DEFAULT_FX_PAIRS, pairs_from_env
 
+
+def _normalize_database_url(url: str | None) -> str | None:
+    if not url:
+        return url
+    if url.startswith("mysql://"):
+        return url.replace("mysql://", "mysql+pymysql://", 1)
+    return url
+
+
 # Load environment variables from .env
 load_dotenv()
 
@@ -96,7 +105,7 @@ _MYSQL_CONFIGURED = any(
     os.getenv(k)
     for k in ("MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_HOST", "MYSQL_PORT", "MYSQL_DB")
 )
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = _normalize_database_url(os.getenv("DATABASE_URL"))
 if not DATABASE_URL:
     if _MYSQL_CONFIGURED:
         # Credentials must be URL-encoded (passwords often contain /, @, ! ...).
