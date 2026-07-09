@@ -5,18 +5,28 @@ Nothing in this file is ever rewritten at runtime — the symbol being
 predicted is a function parameter throughout the engine.
 """
 import os
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from dotenv import load_dotenv  # type: ignore
 
 from utils.pairs import DEFAULT_FX_PAIRS, pairs_from_env
 
 
-def _normalize_database_url(url: str | None) -> str | None:
+def _normalize_database_url(url: str | None) -> tuple[str | None, str | None]:
     if not url:
-        return url
+        return url, None
     if url.startswith("mysql://"):
-        return url.replace("mysql://", "mysql+pymysql://", 1)
-    return url
+        url = url.replace("mysql://", "mysql+pymysql://", 1)
+    parsed = urlsplit(url)
+    ssl_mode = None
+    query_params = []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key.lower().replace("_", "-") == "ssl-mode":
+            ssl_mode = value.strip().lower() or None
+            continue
+        query_params.append((key, value))
+    normalized_url = urlunsplit(parsed._replace(query=urlencode(query_params)))
+    return normalized_url, ssl_mode
 
 
 # Load environment variables from .env
@@ -105,7 +115,7 @@ _MYSQL_CONFIGURED = any(
     os.getenv(k)
     for k in ("MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_HOST", "MYSQL_PORT", "MYSQL_DB")
 )
-DATABASE_URL = _normalize_database_url(os.getenv("DATABASE_URL"))
+DATABASE_URL, DATABASE_SSL_MODE = _normalize_database_url(os.getenv("DATABASE_URL"))
 if not DATABASE_URL:
     if _MYSQL_CONFIGURED:
         # Credentials must be URL-encoded (passwords often contain /, @, ! ...).
@@ -120,6 +130,7 @@ if not DATABASE_URL:
             DATABASE_URL = f"mysql+pymysql://{_user}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     else:
         DATABASE_URL = "sqlite:///./smc.db"
+        DATABASE_SSL_MODE = None
 
 # -----------------------------
 # Telegram Configuration
