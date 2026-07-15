@@ -698,7 +698,7 @@ def start_scheduler():
 def _bot_supervisor():
     """Run Telegram polling in a loop; auto-restart if polling stops or crashes."""
     from utils.config import TELEGRAM_BOT_TOKEN
-    from utils.telegram_http import bot_enabled, is_telegram_network_error, telegram_api_reachable
+    from utils.telegram_http import bot_enabled, is_telegram_network_error, telegram_api_status
     import time
     from bot import run_bot
 
@@ -715,12 +715,14 @@ def _bot_supervisor():
 
     backoff = 30
     while True:
-        if not telegram_api_reachable():
+        ok, detail = telegram_api_status()
+        if not ok:
             log.warning(
                 "Telegram API unreachable — will retry in %ss "
                 "(set TELEGRAM_PROXY_URL or TELEGRAM_BOT_ENABLED=false)",
                 backoff,
             )
+            log.warning("Telegram API status detail: %s", detail)
             time.sleep(backoff)
             backoff = min(backoff * 2, 300)
             continue
@@ -760,6 +762,14 @@ def start_bot_thread() -> threading.Thread | None:
     thread.start()
     log.info("Telegram bot supervisor started (runs in parallel with the web API).")
     return thread
+
+
+def _background_services_enabled_by_default() -> bool:
+    from utils.config import APP_ENV
+    raw = os.getenv("BACKGROUND_SERVICES_ENABLED")
+    if raw is None:
+        return APP_ENV == "production"
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def cmd_worker() -> None:
@@ -967,6 +977,11 @@ def main():
         action="store_true",
         help="also start monitors, scheduler, and Telegram supervisor",
     )
+    p_api.add_argument(
+        "--no-background",
+        action="store_true",
+        help="do not start background services, even in production",
+    )
     sub.add_parser("worker", help="background services only")
     sub.add_parser("bot", help="Telegram bot only")
     sub.add_parser("refresh", help="refresh data + models for all pairs")
@@ -989,12 +1004,16 @@ def main():
         assert_production_ready()
         init_database()
         _prepare_platform_ports(dev_mode=False)
-        if args.with_background:
+        run_background = (
+            not args.no_background
+            and (args.with_background or _background_services_enabled_by_default())
+        )
+        if run_background:
             start_background_services()
         log.info(
             "Web/API http://127.0.0.1:%s  |  Telegram bot: %s",
             API_PORT,
-            "enabled (parallel)" if (args.with_background and TELEGRAM_BOT_TOKEN) else "separate/disabled",
+            "enabled (parallel)" if (run_background and TELEGRAM_BOT_TOKEN) else "separate/disabled",
         )
         api_thread = _start_api_thread()
         _wait_for_platform(api_thread, dev_mode=False)

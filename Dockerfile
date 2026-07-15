@@ -31,4 +31,4 @@ VOLUME ["/app/data", "/app/model", "/app/logs", "/app/backups"]
 
 EXPOSE 5000
 
-CMD ["python", "run.py", "api"]
+CMD ["python", "run.py", "api", "--with-background"]

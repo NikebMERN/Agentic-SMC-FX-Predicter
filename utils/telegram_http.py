@@ -92,10 +92,10 @@ def is_telegram_network_error(exc: BaseException | None) -> bool:
     return is_telegram_network_error(getattr(exc, "__cause__", None))
 
 
-def telegram_api_reachable() -> bool:
-    """Quick probe before starting long-polling."""
+def telegram_api_status() -> tuple[bool, str]:
+    """Quick probe before starting long-polling, with redacted diagnostics."""
     if not TELEGRAM_BOT_TOKEN:
-        return False
+        return False, "TELEGRAM_BOT_TOKEN is missing"
     try:
         import requests
 
@@ -104,9 +104,17 @@ def telegram_api_reachable() -> bool:
             timeout=(min(TELEGRAM_CONNECT_TIMEOUT, 8), min(TELEGRAM_READ_TIMEOUT, 12)),
             proxies=requests_proxies(),
         )
-        return r.ok
-    except Exception:
-        return False
+        if r.ok:
+            return True, "ok"
+        return False, f"Telegram getMe failed with HTTP {r.status_code}: {redact(r.text[:200])}"
+    except Exception as exc:
+        return False, redact(exc)
+
+
+def telegram_api_reachable() -> bool:
+    """Quick boolean probe before starting long-polling."""
+    ok, _ = telegram_api_status()
+    return ok
 
 
 def bot_enabled() -> bool:
