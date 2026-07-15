@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+from urllib.parse import urlsplit
 
 from utils.config import API_HOST, API_PORT
 from utils.logger import get_logger
@@ -27,6 +28,28 @@ from utils.logger import get_logger
 log = get_logger("run")
 
 _child_processes: list[subprocess.Popen] = []
+
+
+def _database_startup_hint(exc: Exception) -> str:
+    message = str(exc)
+    dns_markers = (
+        "Name or service not known",
+        "Temporary failure in name resolution",
+        "[Errno -2]",
+        "nodename nor servname provided",
+    )
+    if not any(marker in message for marker in dns_markers):
+        return ""
+    try:
+        from utils.config import DATABASE_URL
+        host = urlsplit(DATABASE_URL).hostname or "configured database host"
+    except Exception:
+        host = "configured database host"
+    return (
+        f" Database hostname '{host}' does not resolve. Copy the exact MySQL "
+        "Service URI/Host from Aiven Quick Connect, confirm the Aiven service "
+        "is Running, then update Render DATABASE_URL."
+    )
 
 
 def _stop_child_processes() -> None:
@@ -391,7 +414,10 @@ def init_database() -> bool:
         return True
     except Exception as exc:
         if APP_ENV == "production":
-            raise RuntimeError(f"Database initialization failed in production: {exc}") from exc
+            hint = _database_startup_hint(exc)
+            raise RuntimeError(
+                f"Database initialization failed in production: {exc}{hint}"
+            ) from exc
         log.warning("Database unavailable (%s) - auth/trade routes will fail until it is up.", exc)
         return False
 
