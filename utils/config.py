@@ -12,12 +12,26 @@ from dotenv import load_dotenv  # type: ignore
 from utils.pairs import DEFAULT_FX_PAIRS, pairs_from_env
 
 
+def _normalize_aiven_mysql_host(parsed):
+    host = parsed.hostname or ""
+    if not parsed.scheme.startswith("mysql"):
+        return parsed
+    if not host.endswith(".aivencloud.com") or host.startswith("mysql-"):
+        return parsed
+
+    userinfo, separator, _hostport = parsed.netloc.rpartition("@")
+    prefix = f"{userinfo}{separator}" if separator else ""
+    port = f":{parsed.port}" if parsed.port else ""
+    return parsed._replace(netloc=f"{prefix}mysql-{host}{port}")
+
+
 def _normalize_database_url(url: str | None) -> tuple[str | None, str | None]:
     if not url:
         return url, None
     if url.startswith("mysql://"):
         url = url.replace("mysql://", "mysql+pymysql://", 1)
     parsed = urlsplit(url)
+    parsed = _normalize_aiven_mysql_host(parsed)
     ssl_mode = None
     query_params = []
     for key, value in parse_qsl(parsed.query, keep_blank_values=True):
