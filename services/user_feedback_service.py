@@ -25,6 +25,10 @@ def submit_feedback(
     comment: str | None = None,
     *,
     kind: str | None = None,
+    screenshot_path: str | None = None,
+    account_type: str | None = None,
+    execution_delay_ms: int | None = None,
+    manual_notes: str | None = None,
 ) -> tuple[bool, str, UserFeedback | None]:
     fb = (feedback or "").strip().upper()
     if fb not in ALLOWED_FEEDBACK:
@@ -96,6 +100,11 @@ def submit_feedback(
                 db.add(row)
                 existing = row
 
+        existing.screenshot_path = screenshot_path or existing.screenshot_path
+        existing.account_type = account_type or existing.account_type
+        if execution_delay_ms is not None:
+            existing.execution_delay_ms = max(0, int(execution_delay_ms))
+        existing.manual_notes = manual_notes or existing.manual_notes
         if review.status == "pending":
             review.status = "awaiting_feedback"
         db.commit()

@@ -77,3 +77,9 @@ def start_health_monitor():
     _running = True
     threading.Thread(target=_loop, daemon=True, name="health-monitor").start()
     log.info("Health monitor started")
+
+
+def stop_health_monitor() -> None:
+    global _running
+    _running = False
+    log.info("Health monitor stopping")

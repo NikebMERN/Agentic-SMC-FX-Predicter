@@ -20,7 +20,13 @@ MAX_LOT = 100.0
 
 
 def pip_size_for(symbol: str) -> float:
+    if symbol.upper() in {"XAUUSD", "GOLD"}:
+        return 0.01
     return 0.01 if symbol.upper().endswith("JPY") else 0.0001
+
+
+def contract_size_for(symbol: str) -> float:
+    return 100.0 if symbol.upper() in {"XAUUSD", "GOLD"} else STANDARD_LOT
 
 
 def _quote_usd_rate(quote: str) -> tuple[float | None, bool]:
@@ -79,7 +85,8 @@ def pip_calculator(
 
     # Pip value of one standard lot, expressed in the QUOTE currency,
     # then converted to USD.
-    pip_value_quote = pip * STANDARD_LOT  # e.g. 10 USD on EURUSD, 1000 JPY on USDJPY
+    contract_size = contract_size_for(symbol)
+    pip_value_quote = pip * contract_size
     rate, approximate = _quote_usd_rate(symbol[3:])
     pip_value_usd = pip_value_quote * (rate if rate else (1.0 / entry if symbol.startswith("USD") else 1.0))
 
@@ -120,7 +127,9 @@ def pip_calculator(
         "sl_pips": round(sl_pips, 1),
         "tp_pips": round(tp_pips, 1),
         "pip_value_per_lot_usd": round(pip_value_usd, 2),
+        "contract_size": contract_size,
         "lot_size": round(lot_size, 2),
+        "position_size": round(lot_size * contract_size, 2),
         "risk_amount": actual_risk,
         "reward_amount": reward_amount,
         "risk_reward": round(tp_pips / sl_pips, 2),
@@ -128,3 +137,32 @@ def pip_calculator(
         "risk_exceeds_requested": risk_exceeds_requested,
         "warning": warning,
     }
+
+
+def calculate_lot_from_market(symbol: str, balance: float, risk_pct: float) -> dict:
+    """Size from the latest close using a volatility-aware 1.5 ATR stop."""
+    import pandas as pd
+    from engine.data import get_data, normalize_symbol
+    from engine.smc import atr
+
+    symbol = normalize_symbol(symbol)
+    balance = float(balance)
+    risk_pct = float(risk_pct)
+    if balance <= 0:
+        raise ValueError("Balance must be greater than zero")
+    if not 0 < risk_pct <= 10:
+        raise ValueError("Risk percent must be greater than 0 and no more than 10")
+    frame, source = get_data(symbol, fetch=True)
+    if len(frame) < 20:
+        raise ValueError("At least 20 candles are required to calculate a protective stop")
+    entry = float(frame["Close"].iloc[-1])
+    atr_value = float(atr(frame, 14).iloc[-1])
+    if not pd.notna(atr_value) or atr_value <= 0:
+        raise ValueError("Could not calculate market volatility")
+    result = pip_calculator(
+        symbol, entry, entry - atr_value * 1.5, entry + atr_value * 3.0,
+        balance, risk_pct,
+    )
+    result["data_source"] = source
+    result["stop_method"] = "1.5 ATR"
+    return result

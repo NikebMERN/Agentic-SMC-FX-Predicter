@@ -1,5 +1,5 @@
 import { Navigate, useLocation } from "react-router-dom";
-import { useAuth } from "../context/AuthContext.jsx";
+import { useAuth } from "../context/auth.js";
 
 /** Logged-in users only (pending approval allowed). */
 export default function ProtectedRoute({ children }) {

@@ -10,11 +10,8 @@ from db.models import ConfirmationWatch
 from db.session import SessionLocal
 from engine.confluence import ACTION_WAIT, is_trade_action
 from engine.pipeline import predict_symbol
-from services.notification_service import notify_confirmation_ready
-from services.notifier import notify_user
 from services.prediction_record import record_prediction_from_result
 from services.prediction_review import list_reviews, parse_horizon
-from utils.compliance import assert_safe_wording
 from utils.logger import get_logger
 
 log = get_logger("services.confirmation_monitor")
@@ -129,7 +126,12 @@ def maybe_create_watch(*, user_id: int | None, review, result: dict) -> Confirma
         db.close()
 
 
-def _serialize_watch(row: ConfirmationWatch, *, review: dict | None = None) -> dict:
+def _serialize_watch(
+    row: ConfirmationWatch,
+    *,
+    review: dict | None = None,
+    deliveries: list[dict] | None = None,
+) -> dict:
     snapshot = None
     if row.confirmed_snapshot_json:
         try:
@@ -156,6 +158,11 @@ def _serialize_watch(row: ConfirmationWatch, *, review: dict | None = None) -> d
         "snapshot": snapshot,
         "decision": decision or None,
         "review": review,
+        "notification_status": (
+            "delivered" if row.notified_at else
+            "pending" if row.status == "confirmed" else "not_applicable"
+        ),
+        "deliveries": deliveries or [],
     }
 
 
@@ -169,6 +176,19 @@ def get_watch(user_id: int, watch_id: int) -> dict | None:
         )
         if not row:
             return None
+        from db.models import NotificationDelivery
+        deliveries = [
+            {
+                "channel": delivery.channel,
+                "status": delivery.status,
+                "attempts": delivery.attempts,
+                "last_error": delivery.last_error,
+                "delivered_at": delivery.delivered_at.isoformat() if delivery.delivered_at else None,
+            }
+            for delivery in db.query(NotificationDelivery).filter(
+                NotificationDelivery.event_key == f"confirmation:{row.id}"
+            ).order_by(NotificationDelivery.id).all()
+        ]
         review = None
         if row.confirmed_review_id:
             reviews = list_reviews(user_id=user_id, limit=5)
@@ -178,7 +198,7 @@ def get_watch(user_id: int, watch_id: int) -> dict | None:
                     (r for r in list_reviews(user_id=user_id, limit=200) if r["id"] == row.confirmed_review_id),
                     None,
                 )
-        return _serialize_watch(row, review=review)
+        return _serialize_watch(row, review=review, deliveries=deliveries)
     finally:
         db.close()
 
@@ -212,22 +232,34 @@ def _run_predict(row: ConfirmationWatch) -> dict:
     )
 
 
-def _notify_confirmed(row: ConfirmationWatch, decision: dict) -> None:
-    notify_confirmation_ready(
-        row.user_id,
-        watch_id=row.id,
-        symbol=row.symbol,
-        confirmed_action=row.confirmed_action or decision.get("action", ""),
-        wait_reason=row.wait_reason or "",
-        confirmation_reason=row.confirmation_reason or "",
-    )
-    tg = assert_safe_wording(
-        f"Setup confirmed — {row.symbol} {row.confirmed_action} is ready to enter.\n\n"
-        f"You were waiting for: {row.wait_reason or 'confirmation'}\n"
-        f"Confirmation: {row.confirmation_reason or 'Trade bias is now active.'}\n\n"
-        f"Open the app to review levels and record whether you entered."
-    )
-    notify_user(row.user_id, tg)
+def _confirmation_payload(row: ConfirmationWatch, result: dict) -> dict:
+    decision = result.get("decision") or {}
+    calculator = result.get("calculator") or {}
+    summary = result.get("analysis_summary") or {}
+    lot_size = calculator.get("lot_size")
+    contract_size = calculator.get("contract_size")
+    return {
+        "watch_id": row.id,
+        "symbol": row.symbol,
+        "direction": row.confirmed_action or decision.get("action"),
+        "entry": decision.get("entry"),
+        "stop_loss": decision.get("stop_loss") or decision.get("invalidation_price"),
+        "take_profit": decision.get("take_profit") or decision.get("target_liquidity"),
+        "risk_reward": decision.get("risk_reward"),
+        "confidence": decision.get("confidence"),
+        "lot_size": lot_size,
+        "position_size": calculator.get("position_size") or (
+            round(lot_size * contract_size, 2) if lot_size and contract_size else None
+        ),
+        "strategy": result.get("strategy"),
+        "timeframe": result.get("interval"),
+        "session": decision.get("killzone") or summary.get("killzone") or "Outside kill zone",
+        "trend": decision.get("market_trend") or summary.get("trend"),
+        "confluence_score": decision.get("score") or decision.get("weighted_score"),
+        "wait_reason": row.wait_reason,
+        "confirmation_reason": row.confirmation_reason,
+        "link": f"/confirm/{row.id}",
+    }
 
 
 def _mark_confirmed(row: ConfirmationWatch, result: dict) -> None:
@@ -237,9 +269,6 @@ def _mark_confirmed(row: ConfirmationWatch, result: dict) -> None:
     row.confirmation_reason = extract_confirmation_reason(decision)
     row.confirmed_snapshot_json = json.dumps(_trim_snapshot(result), default=str)
     row.updated_at = datetime.utcnow()
-    if not row.notified_at:
-        row.notified_at = datetime.utcnow()
-        _notify_confirmed(row, decision)
 
 
 def scan_watches(*, force: bool = False) -> int:
@@ -281,7 +310,15 @@ def scan_watches(*, force: bool = False) -> int:
             action = decision.get("action")
             if is_trade_action(action):
                 _mark_confirmed(row, result)
+                from services.notification_queue import enqueue_event_in_session, process_pending
+                enqueue_event_in_session(
+                    db,
+                    event_key=f"confirmation:{row.id}",
+                    user_id=row.user_id,
+                    payload=_confirmation_payload(row, result),
+                )
                 db.commit()
+                process_pending()
                 notified += 1
                 log.info("Confirmation watch #%s confirmed as %s", row.id, action)
             else:

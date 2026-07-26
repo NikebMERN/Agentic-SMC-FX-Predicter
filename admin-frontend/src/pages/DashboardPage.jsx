@@ -19,15 +19,21 @@ function Badge({ ok, children, warn }) {
 export default function DashboardPage() {
   const [data, setData] = useState(null);
   const [analytics, setAnalytics] = useState(null);
+  const [system, setSystem] = useState(null);
   const [error, setError] = useState("");
   const [showAllPairs, setShowAllPairs] = useState(true);
   const [showAllBacktests, setShowAllBacktests] = useState(false);
 
   useEffect(() => {
-    Promise.all([api("/overview"), api("/analytics").catch(() => null)])
-      .then(([overview, an]) => {
+    Promise.all([
+      api("/overview"),
+      api("/analytics").catch(() => null),
+      api("/system/health").catch(() => null),
+    ])
+      .then(([overview, an, health]) => {
         setData(overview);
         setAnalytics(an);
+        setSystem(health);
       })
       .catch((e) => setError(e.message));
   }, []);
@@ -84,6 +90,37 @@ export default function DashboardPage() {
           {h.log_file_kb != null && <span className="rounded-full bg-[#21262d] px-2 py-0.5 text-xs text-[#8b949e]">Log {h.log_file_kb} KB</span>}
         </div>
       </div>
+      {system && (
+        <div className="mb-6 space-y-3">
+          <div className="grid gap-3 md:grid-cols-5">
+            {[
+              ["CPU", system.resources?.available ? `${system.resources.cpu_percent}%` : "N/A"],
+              ["RAM", system.resources?.available ? `${system.resources.ram_percent}%` : "N/A"],
+              ["Process RAM", system.resources?.available ? `${system.resources.process_rss_mb} MB` : "N/A"],
+              ["Queue", system.queue_size ?? 0],
+              ["Redis", system.redis?.healthy ? `${system.redis.latency_ms} ms` : "Unavailable"],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-lg border border-[#30363d] bg-[#161b22] p-3">
+                <div className="text-xl font-semibold">{value}</div>
+                <div className="text-xs text-[#8b949e]">{label}</div>
+              </div>
+            ))}
+          </div>
+          <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-4">
+            <h2 className="mb-2 font-medium">Runtime services</h2>
+            <div className="grid gap-2 md:grid-cols-3">
+              {(system.services || []).map((service) => (
+                <div key={service.service} className="flex items-center justify-between rounded border border-[#30363d] p-2 text-sm">
+                  <span>{service.service}</span>
+                  <Badge ok={service.healthy}>
+                    {service.healthy ? `healthy · ${service.age_seconds}s` : "offline"}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       <div className="mb-6 rounded-lg border border-[#30363d] bg-[#161b22] p-4">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           <h2 className="font-medium">SMC/ICT thresholds</h2>

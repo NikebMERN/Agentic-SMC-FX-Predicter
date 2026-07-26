@@ -1,0 +1,1 @@
+function l(e){return{SUCCESSFUL:"Successful",FAILED:"Failed",DID_NOT_TAKE:"Didn't take",UNCLEAR:"Unclear"}[e]||e}function n(e){return{ENTERED:"Accepted — entered trade",DID_NOT_TAKE:"Rejected — did not take"}[e]||e}export{l as o,n as t};

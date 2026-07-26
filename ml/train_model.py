@@ -7,6 +7,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score,
     brier_score_loss,
+    confusion_matrix,
     f1_score,
     log_loss,
     precision_score,
@@ -91,6 +92,21 @@ def train_candidate(
     if len(y) < MIN_SAMPLES or y.nunique() < 2:
         return None
 
+    # Deterministic feature selection learned from the training prefix only:
+    # remove constants and exact duplicates without looking at validation labels.
+    usable = [column for column in X.columns if X[column].nunique(dropna=False) > 1]
+    X = X[usable].copy()
+    duplicate_columns = set()
+    for index, column in enumerate(X.columns):
+        for previous in X.columns[:index]:
+            if X[column].equals(X[previous]):
+                duplicate_columns.add(column)
+                break
+    if duplicate_columns:
+        X = X.drop(columns=sorted(duplicate_columns))
+    if X.empty:
+        return None
+
     split = int(len(y) * (1 - val_fraction))
     if split < 20:
         split = max(1, len(y) - 10)
@@ -102,6 +118,12 @@ def train_candidate(
     actual_type = model_type
     if type(base).__name__ == "RandomForestClassifier" and model_type != "RANDOM_FOREST":
         actual_type = "RANDOM_FOREST"
+    positive_count = int((y_train == 1).sum())
+    negative_count = int((y_train == 0).sum())
+    if positive_count and negative_count and hasattr(base, "set_params"):
+        params = base.get_params()
+        if "scale_pos_weight" in params:
+            base.set_params(scale_pos_weight=negative_count / positive_count)
 
     calibrator, cal_method = fit_calibrated(base, X_train, y_train, sample_weight=w_train)
 
@@ -117,7 +139,24 @@ def train_candidate(
             "log_loss": float(log_loss(y_val, proba, labels=[0, 1])),
             "samples": int(len(y)),
             "calibration_method": cal_method,
+            "selected_features": list(X.columns),
+            "confusion_matrix": confusion_matrix(y_val, preds, labels=[0, 1]).tolist(),
         }
+        calibrated_models = getattr(calibrator, "calibrated_classifiers_", [])
+        fitted_estimator = (
+            getattr(calibrated_models[0], "estimator", None)
+            if calibrated_models else None
+        )
+        importances = getattr(fitted_estimator, "feature_importances_", None)
+        if importances is not None and len(importances) == len(X.columns):
+            metrics["feature_importance"] = [
+                {"feature": feature, "importance": float(importance)}
+                for feature, importance in sorted(
+                    zip(X.columns, importances),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )
+            ]
     else:
         metrics = {"samples": int(len(y)), "calibration_method": cal_method}
 

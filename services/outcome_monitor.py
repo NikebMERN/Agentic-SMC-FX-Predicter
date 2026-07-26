@@ -119,7 +119,10 @@ def _loop():
             run_cycle()
         except Exception:
             log.exception("Outcome monitor cycle failed")
-        time.sleep(INTERVAL_SEC)
+        for _ in range(INTERVAL_SEC):
+            if not _running:
+                break
+            time.sleep(1)
 
 
 def start_outcome_monitor():
@@ -130,3 +133,11 @@ def start_outcome_monitor():
     _thread = threading.Thread(target=_loop, daemon=True, name="outcome-monitor")
     _thread.start()
     log.info("Outcome monitor started (interval %ss)", INTERVAL_SEC)
+
+
+def stop_outcome_monitor(timeout: float = 10.0) -> None:
+    global _running
+    _running = False
+    if _thread and _thread.is_alive():
+        _thread.join(timeout=timeout)
+    log.info("Outcome monitor stopped")

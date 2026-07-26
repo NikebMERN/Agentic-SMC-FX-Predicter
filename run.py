@@ -16,6 +16,7 @@ The API is served with waitress (production WSGI). The Telegram bot, user web ap
 """
 import argparse
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -23,11 +24,46 @@ import time
 from urllib.parse import urlsplit
 
 from utils.config import API_HOST, API_PORT
+from utils.error_tracking import init_error_tracking
 from utils.logger import get_logger
 
 log = get_logger("run")
+init_error_tracking()
 
 _child_processes: list[subprocess.Popen] = []
+_shutdown_event = threading.Event()
+
+
+def _handle_shutdown(signum, _frame) -> None:
+    log.info("Received signal %s; beginning graceful shutdown", signum)
+    _shutdown_event.set()
+
+
+def install_signal_handlers() -> None:
+    if threading.current_thread() is not threading.main_thread():
+        return
+    for signame in ("SIGTERM", "SIGINT"):
+        signum = getattr(signal, signame, None)
+        if signum is not None:
+            signal.signal(signum, _handle_shutdown)
+
+
+def _stop_monitors() -> None:
+    try:
+        from services.outcome_monitor import stop_outcome_monitor
+        stop_outcome_monitor()
+    except Exception:
+        log.exception("Outcome monitor shutdown failed")
+    try:
+        from services.health_monitor import stop_health_monitor
+        stop_health_monitor()
+    except Exception:
+        log.exception("Health monitor shutdown failed")
+    try:
+        from db.session import engine
+        engine.dispose()
+    except Exception:
+        log.exception("Database pool shutdown failed")
 
 
 def _database_startup_hint(exc: Exception) -> str:
@@ -422,7 +458,7 @@ def init_database() -> bool:
         return False
 
 
-def production_config_issues() -> list[str]:
+def production_config_issues(role: str | None = None) -> list[str]:
     """Return production misconfiguration issues that must be fixed before boot."""
     from utils.config import (
         ALLOW_CACHE_ONLY_PRODUCTION,
@@ -436,28 +472,35 @@ def production_config_issues() -> list[str]:
         RATELIMIT_STORAGE_URI,
     )
     from utils.mailer import is_configured
-    from utils.security import is_weak_password
+    from utils.security import SECRET_KEY, is_weak_password
 
     if APP_ENV != "production":
         return []
 
+    role = (role or os.getenv("SERVICE_ROLE") or "all").lower()
+    validate_api = role in {"all", "api", "web"}
+    validate_market_data = role in {"all", "ai-worker", "worker", "scheduler"}
     issues: list[str] = []
-    if CORS_ORIGINS == ["*"]:
+    if not SECRET_KEY or SECRET_KEY == "change-me":
+        issues.append("SECRET_KEY is missing or unsafe.")
+    if validate_api and CORS_ORIGINS == ["*"]:
         issues.append("CORS_ORIGINS is set to '*' - restrict to your domain in production.")
-    if not is_configured():
+    if validate_api and not is_configured():
         issues.append("SMTP is not configured - password reset emails will fail.")
     if DATABASE_URL and DATABASE_URL.startswith("sqlite"):
         issues.append("DATABASE_URL uses SQLite - use MySQL for production.")
-    if not ADMIN_PASSWORD or is_weak_password(ADMIN_PASSWORD):
+    if validate_api and (not ADMIN_PASSWORD or is_weak_password(ADMIN_PASSWORD)):
         issues.append("ADMIN_PASSWORD is missing or weak - set a strong bootstrap password.")
-    if RATELIMIT_STORAGE_URI == "memory://":
+    if validate_api and RATELIMIT_STORAGE_URI == "memory://":
         issues.append("RATELIMIT_STORAGE_URI uses memory:// - use Redis in production.")
     provider = (DATA_PROVIDER or "auto").lower()
-    if provider == "oanda" and not OANDA_API_KEY:
+    if validate_market_data and provider == "oanda" and not OANDA_API_KEY:
         issues.append("DATA_PROVIDER=oanda but OANDA_API_KEY is missing.")
-    if provider == "alphavantage" and not ALPHA_VANTAGE_API_KEY:
+    if validate_market_data and provider == "alphavantage" and not ALPHA_VANTAGE_API_KEY:
         issues.append("DATA_PROVIDER=alphavantage but ALPHA_VANTAGE_API_KEY is missing.")
-    if provider == "auto" and not (OANDA_API_KEY or ALPHA_VANTAGE_API_KEY or ALLOW_CACHE_ONLY_PRODUCTION):
+    if validate_market_data and provider == "auto" and not (
+        OANDA_API_KEY or ALPHA_VANTAGE_API_KEY or ALLOW_CACHE_ONLY_PRODUCTION
+    ):
         issues.append(
             "No live data provider key is configured - set OANDA_API_KEY or "
             "ALPHA_VANTAGE_API_KEY, or explicitly set ALLOW_CACHE_ONLY_PRODUCTION=true."
@@ -477,8 +520,8 @@ def log_production_warnings() -> None:
     )
 
 
-def assert_production_ready() -> None:
-    issues = production_config_issues()
+def assert_production_ready(role: str | None = None) -> None:
+    issues = production_config_issues(role)
     if not issues:
         return
     raise RuntimeError(
@@ -703,7 +746,10 @@ def start_scheduler():
         else:
             trigger = CronTrigger(hour=2, minute=0, timezone=tz)
 
-        sched = BackgroundScheduler(timezone=tz)
+        sched = BackgroundScheduler(
+            timezone=tz,
+            job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 900},
+        )
 
         def _nightly():
             from services.nightly_retrain import run_retrain
@@ -717,8 +763,10 @@ def start_scheduler():
         sched.add_job(_alerts, "interval", minutes=15, id="alert_scanner", replace_existing=True)
         sched.start()
         log.info("APScheduler started (nightly retrain + 15m alert scan)")
+        return sched
     except Exception as exc:
         log.warning("Scheduler not started: %s", exc)
+        return None
 
 
 def _bot_supervisor():
@@ -802,13 +850,71 @@ def cmd_worker() -> None:
     """Run schedulers, monitors, and Telegram bot without serving HTTP."""
     assert_production_ready()
     init_database()
+    install_signal_handlers()
     start_background_services()
     log.info("Background worker running - monitors, scheduler, and Telegram supervisor active.")
     try:
-        while True:
-            time.sleep(5)
+        while not _shutdown_event.wait(5):
+            pass
     except KeyboardInterrupt:
-        log.info("Worker shutting down.")
+        _shutdown_event.set()
+    finally:
+        _stop_monitors()
+        log.info("Worker shut down cleanly.")
+
+
+def cmd_ai_worker() -> None:
+    """Run continuous monitors, queued delivery, and Telegram without cron jobs."""
+    assert_production_ready("ai-worker")
+    init_database()
+    from services.outcome_monitor import start_outcome_monitor
+    from services.health_monitor import start_health_monitor
+    install_signal_handlers()
+    start_outcome_monitor()
+    start_health_monitor()
+    start_bot_thread()
+    log.info("AI worker running - market monitors, notification delivery, and Telegram active.")
+    try:
+        while not _shutdown_event.is_set():
+            from services.notification_queue import process_pending
+            from services.runtime_monitor import record_heartbeat
+            record_heartbeat("ai-worker")
+            process_pending()
+            _shutdown_event.wait(30)
+    except KeyboardInterrupt:
+        _shutdown_event.set()
+    finally:
+        _stop_monitors()
+        log.info("AI worker shut down cleanly.")
+
+
+def cmd_scheduler() -> None:
+    """Run the singleton APScheduler process."""
+    assert_production_ready("scheduler")
+    init_database()
+    install_signal_handlers()
+    scheduler = start_scheduler()
+    if not scheduler:
+        raise SystemExit("Scheduler failed to start")
+    log.info("Scheduler service running.")
+    try:
+        while not _shutdown_event.is_set():
+            if not scheduler.running:
+                raise RuntimeError("Scheduler stopped unexpectedly")
+            from services.runtime_monitor import record_heartbeat
+            record_heartbeat("scheduler")
+            _shutdown_event.wait(30)
+    except KeyboardInterrupt:
+        _shutdown_event.set()
+    finally:
+        if scheduler.running:
+            scheduler.shutdown(wait=True)
+        try:
+            from db.session import engine
+            engine.dispose()
+        except Exception:
+            log.exception("Database pool shutdown failed")
+        log.info("Scheduler shut down cleanly.")
 
 
 def cmd_all(build_frontend: bool = True, dev_frontend: bool = False):
@@ -1009,6 +1115,8 @@ def main():
         help="do not start background services, even in production",
     )
     sub.add_parser("worker", help="background services only")
+    sub.add_parser("ai-worker", help="continuous monitors, queue, and Telegram")
+    sub.add_parser("scheduler", help="singleton scheduled jobs only")
     sub.add_parser("bot", help="Telegram bot only")
     sub.add_parser("refresh", help="refresh data + models for all pairs")
     sub.add_parser("build-admin", help="build React admin panel (admin-frontend)")
@@ -1045,6 +1153,10 @@ def main():
         _wait_for_platform(api_thread, dev_mode=False)
     elif args.command == "worker":
         cmd_worker()
+    elif args.command == "ai-worker":
+        cmd_ai_worker()
+    elif args.command == "scheduler":
+        cmd_scheduler()
     elif args.command == "bot":
         from bot import run_bot
         run_bot()

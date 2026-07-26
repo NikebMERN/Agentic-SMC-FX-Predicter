@@ -1,8 +1,10 @@
 # app.py
 import json
 import os
+import time
+import uuid
 
-from flask import Flask, request, jsonify, Response, stream_with_context  # type: ignore
+from flask import Flask, request, jsonify, Response, stream_with_context, g  # type: ignore
 from flask_cors import CORS  # type: ignore
 from flask_limiter import Limiter  # type: ignore
 from flask_limiter.util import get_remote_address  # type: ignore
@@ -33,6 +35,11 @@ from db.models import Account, User
 from db.session import SessionLocal, get_db
 
 log = get_logger("api")
+from utils.error_tracking import init_error_tracking
+init_error_tracking()
+if os.getenv("APP_ENV", "production").strip().lower() == "production":
+    from run import assert_production_ready
+    assert_production_ready("api")
 
 app = Flask(__name__)
 CORS(app, origins=CORS_ORIGINS)
@@ -51,12 +58,39 @@ limiter = Limiter(
 DATA_FOLDER = "data"
 
 
+@app.before_request
+def request_context():
+    g.request_started = time.perf_counter()
+    g.request_id = (
+        request.headers.get("X-Request-ID")
+        or request.headers.get("CF-Ray")
+        or uuid.uuid4().hex
+    )
+
+
 @app.after_request
 def security_headers(resp):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers["X-Request-ID"] = getattr(g, "request_id", "")
+    duration_ms = (time.perf_counter() - getattr(g, "request_started", time.perf_counter())) * 1000
+    log.info(
+        "request id=%s method=%s path=%s status=%s duration_ms=%.1f cf_ray=%s",
+        getattr(g, "request_id", "-"), request.method, request.path,
+        resp.status_code, duration_ms, request.headers.get("CF-Ray", "-"),
+    )
     return resp
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    log.error(
+        "Unhandled API error request_id=%s",
+        getattr(g, "request_id", "-"),
+        exc_info=(type(error), error, error.__traceback__),
+    )
+    return jsonify({"error": "Internal server error", "request_id": getattr(g, "request_id", None)}), 500
 
 
 # ---------------- ADMIN PANEL ----------------
@@ -353,23 +387,67 @@ def list_signals(user_id):
 # ---------------- PREDICTION ROUTES ----------------
 @app.route("/healthz", methods=["GET"])
 def healthz():
+    from services.runtime_monitor import record_heartbeat
+    record_heartbeat("api")
+    return jsonify({
+        "status": "alive",
+        "service": "api",
+        "release": os.getenv("RENDER_GIT_COMMIT") or os.getenv("APP_RELEASE"),
+    })
+
+
+@app.route("/readyz", methods=["GET"])
+def readyz():
+    from services.runtime_monitor import record_heartbeat, redis_health
+    record_heartbeat("api")
     db_ok = True
+    db_latency_ms = None
+    started = time.perf_counter()
+    db = None
     try:
         db = SessionLocal()
         db.execute(__import__("sqlalchemy").text("SELECT 1"))
-        db.close()
-    except Exception:
+        db_latency_ms = round((time.perf_counter() - started) * 1000, 2)
+    except Exception as exc:
         db_ok = False
+        log.warning("Readiness database check failed: %s", exc)
+    finally:
+        if db:
+            db.close()
     from engine.model_trainer import MODEL_DIR
     from utils.config import TELEGRAM_BOT_TOKEN
+    from engine.data import provider_health
+    from db.models import NotificationDelivery
+    queue_pending = 0
+    try:
+        health_db = SessionLocal()
+        queue_pending = health_db.query(NotificationDelivery).filter(
+            NotificationDelivery.status.in_(("pending", "retry", "processing"))
+        ).count()
+        health_db.close()
+    except Exception:
+        pass
+    redis = redis_health()
+    redis_public = {
+        key: value for key, value in redis.items()
+        if key in {"configured", "healthy", "latency_ms"}
+    }
+    redis_required = bool(os.getenv("REDIS_URL"))
+    ready = db_ok and (redis["healthy"] or not redis_required)
     payload = {
-        "status": "ok" if db_ok else "degraded",
-        "database": db_ok,
+        "status": "ready" if ready else "not_ready",
+        "database": {"healthy": db_ok, "latency_ms": db_latency_ms},
+        "redis": redis_public,
         "data_dir_writable": os.access(DATA_FOLDER, os.W_OK),
         "models_dir": os.path.isdir(MODEL_DIR),
         "bot_configured": bool(TELEGRAM_BOT_TOKEN),
+        "provider_health": {
+            provider: {"healthy": details.get("healthy", True)}
+            for provider, details in provider_health().items()
+        },
+        "notification_queue_pending": queue_pending,
     }
-    return jsonify(payload), 200 if db_ok else 503
+    return jsonify(payload), 200 if ready else 503
 
 
 @app.route("/telegram/link-code", methods=["POST"])
@@ -462,6 +540,10 @@ def submit_review_feedback(user_id, review_id):
         data.get("feedback", ""),
         data.get("comment"),
         kind=data.get("kind"),
+        screenshot_path=data.get("screenshot"),
+        account_type=data.get("account_type"),
+        execution_delay_ms=data.get("execution_delay_ms"),
+        manual_notes=data.get("manual_notes"),
     )
     if not ok:
         code = 404 if "not found" in msg.lower() else 409 if "already" in msg.lower() else 400

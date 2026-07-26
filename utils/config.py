@@ -15,6 +15,8 @@ from utils.pairs import DEFAULT_FX_PAIRS, pairs_from_env
 def _normalize_database_url(url: str | None) -> tuple[str | None, str | None]:
     if not url:
         return url, None
+    if url.startswith("sqlite:"):
+        return url, None
     if url.startswith("mysql://"):
         url = url.replace("mysql://", "mysql+pymysql://", 1)
     parsed = urlsplit(url)

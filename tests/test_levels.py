@@ -1,6 +1,5 @@
 # tests/test_levels.py
-"""SL/TP realism: structure-based placement capped at a percent of price
-so levels are actually reachable on the chart."""
+"""SL/TP realism: never move a stop inside structural invalidation."""
 import pandas as pd
 
 from engine.confluence import (
@@ -26,14 +25,13 @@ def _analysis(obs=None, pools=None):
     }
 
 
-def test_far_structure_stop_is_capped_to_percent():
+def test_far_structure_stop_is_flagged_instead_of_moved_inside_invalidation():
     # protective order block 2% below price — unrealistically far
     a = _analysis(obs=[{"direction": "bullish", "low": 1.0780, "high": 1.0800}])
     levels = _stop_and_target(a, "bullish", 5)
-    max_dist = PRICE * SL_MAX_PCT_DEFAULT / 100
-    assert PRICE - levels["stop_loss"] <= max_dist + 1e-9
-    assert levels["stop_basis"] == "percent_cap"
-    assert levels["sl_pips"] is not None and levels["sl_pct"] <= SL_MAX_PCT_DEFAULT + 1e-6
+    assert levels["stop_loss"] < 1.0780
+    assert levels["stop_basis"] == "structure_beyond_risk_limit"
+    assert levels["stop_exceeds_cap"] is True
 
 
 def test_faraway_liquidity_is_never_the_target():
@@ -55,9 +53,10 @@ def test_nearby_structure_is_respected():
     assert levels["stop_loss"] < PRICE < levels["take_profit"]
 
 
-def test_bearish_levels_are_mirrored_and_capped():
+def test_bearish_levels_preserve_structural_invalidation_and_flag_risk():
     a = _analysis(obs=[{"direction": "bearish", "low": 1.1200, "high": 1.1250}])  # 2%+ above
     levels = _stop_and_target(a, "bearish", 5)
     assert levels["stop_loss"] > PRICE > levels["take_profit"]
-    assert levels["sl_pct"] <= SL_MAX_PCT_DEFAULT + 1e-6
+    assert levels["stop_loss"] > 1.1250
+    assert levels["stop_exceeds_cap"] is True
     assert levels["tp_pct"] <= TP_MAX_PCT_DEFAULT + 1e-6

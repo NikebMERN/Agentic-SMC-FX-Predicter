@@ -34,8 +34,23 @@ def send_message(chat_id: str, text: str) -> bool:
                 proxies=requests_proxies(),
             )
             if r.ok:
+                try:
+                    message_id = (r.json().get("result") or {}).get("message_id")
+                except ValueError:
+                    message_id = None
+                log.info("Telegram delivered chat=%s message_id=%s", chat_id, message_id)
                 return True
             log.warning("Telegram send failed (%s): %s", r.status_code, r.text[:200])
+            if r.status_code == 429 or r.status_code >= 500:
+                if attempt + 1 >= 3:
+                    return False
+                retry_after = 0
+                try:
+                    retry_after = int((r.json().get("parameters") or {}).get("retry_after", 0))
+                except (TypeError, ValueError):
+                    pass
+                time.sleep(max(retry_after, 2 ** attempt))
+                continue
             return False
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
             # This network intermittently drops connections to Telegram —

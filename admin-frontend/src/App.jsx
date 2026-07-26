@@ -1,24 +1,29 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
-import LoginPage from "./pages/LoginPage.jsx";
-import DashboardPage from "./pages/DashboardPage.jsx";
-import UsersPage from "./pages/UsersPage.jsx";
-import UserDetailPage from "./pages/UserDetailPage.jsx";
-import SignalsPage from "./pages/SignalsPage.jsx";
-import TradesPage from "./pages/TradesPage.jsx";
-import ModelsPage from "./pages/ModelsPage.jsx";
-import PredictPage from "./pages/PredictPage.jsx";
-import SettingsPage from "./pages/SettingsPage.jsx";
-import ThresholdsPage from "./pages/ThresholdsPage.jsx";
-import MLOpsPage from "./pages/MLOpsPage.jsx";
-import LogsPage from "./pages/LogsPage.jsx";
-import ReviewsPage from "./pages/ReviewsPage.jsx";
-import TrainingRecordsPage from "./pages/TrainingRecordsPage.jsx";
-import AuditPage from "./pages/AuditPage.jsx";
+
+const LoginPage = lazy(() => import("./pages/LoginPage.jsx"));
+const DashboardPage = lazy(() => import("./pages/DashboardPage.jsx"));
+const UsersPage = lazy(() => import("./pages/UsersPage.jsx"));
+const UserDetailPage = lazy(() => import("./pages/UserDetailPage.jsx"));
+const SignalsPage = lazy(() => import("./pages/SignalsPage.jsx"));
+const TradesPage = lazy(() => import("./pages/TradesPage.jsx"));
+const ModelsPage = lazy(() => import("./pages/ModelsPage.jsx"));
+const PredictPage = lazy(() => import("./pages/PredictPage.jsx"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage.jsx"));
+const ThresholdsPage = lazy(() => import("./pages/ThresholdsPage.jsx"));
+const MLOpsPage = lazy(() => import("./pages/MLOpsPage.jsx"));
+const LogsPage = lazy(() => import("./pages/LogsPage.jsx"));
+const ReviewsPage = lazy(() => import("./pages/ReviewsPage.jsx"));
+const TrainingRecordsPage = lazy(() => import("./pages/TrainingRecordsPage.jsx"));
+const AuditPage = lazy(() => import("./pages/AuditPage.jsx"));
+const PerformancePage = lazy(() => import("./pages/PerformancePage.jsx"));
+const OperationsPage = lazy(() => import("./pages/OperationsPage.jsx"));
 
 export default function App() {
   return (
+    <Suspense fallback={<div className="p-8 text-slate-400">Loading page…</div>}>
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route element={<ProtectedRoute />}>
@@ -37,10 +42,13 @@ export default function App() {
           <Route path="/ml-ops" element={<MLOpsPage />} />
           <Route path="/logs" element={<LogsPage />} />
           <Route path="/audit" element={<AuditPage />} />
+          <Route path="/performance" element={<PerformancePage />} />
+          <Route path="/operations" element={<OperationsPage />} />
         </Route>
       </Route>
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
+    </Suspense>
   );
 }

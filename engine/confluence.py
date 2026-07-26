@@ -165,8 +165,11 @@ def analyze(
     breakers = ict.detect_breakers(df, order_blocks, sweeps)
     killzone = ict.active_killzone(df.index[-1])
     session = ict.session_info(df.index[-1])
+    from engine.patterns import analyze_patterns
+    from engine.institutional import classify_market_maker_model
+    patterns = analyze_patterns(df)
 
-    return {
+    result = {
         "symbol": symbol,
         "interval": interval,
         "bars": len(df),
@@ -178,6 +181,10 @@ def analyze(
         "structure": structure,
         "order_blocks": order_blocks,
         "valid_order_blocks": smc.valid_order_blocks(order_blocks),
+        "mitigation_blocks": [
+            block for block in smc.valid_order_blocks(order_blocks)
+            if block.get("status") == "mitigated"
+        ],
         "fvgs": fvgs,
         "pools": pools,
         "sweeps": sweeps,
@@ -188,9 +195,13 @@ def analyze(
         "breakers": breakers,
         "killzone": killzone,
         "session": session,
+        "patterns": patterns,
+        "market_maker_model": None,
         "pdh_pdl": ict.pdh_pdl(df),
         "pwh_pwl": ict.pwh_pwl(df),
     }
+    result["market_maker_model"] = classify_market_maker_model(result)
+    return result
 
 
 def _collect_votes(analysis: dict, strategy_mode: str = "both") -> list[tuple[str, float, str, str]]:
@@ -310,6 +321,45 @@ def _collect_votes(analysis: dict, strategy_mode: str = "both") -> list[tuple[st
                 f"price retesting {br['low']:.5f}-{br['high']:.5f}",
                 "displacement",
             ))
+
+    # Supporting evidence is admitted only after institutional rules establish
+    # direction. Contradictory patterns are ignored and total influence is capped.
+    core_directions = {vote[0] for vote in votes if vote[0] in ("bullish", "bearish")}
+    if core_directions:
+        pattern_data = analysis.get("patterns") or {}
+        pattern_items = pattern_data.get("candlesticks", []) + pattern_data.get("chart_structures", [])
+        strategy_multiplier = {"ict": 0.45, "smc": 0.65, "both": 0.55}[mode]
+        support_budget = 0.30
+        for pattern in sorted(pattern_items, key=lambda item: item.get("weight", 0), reverse=True):
+            direction = pattern.get("direction")
+            weighted = min(float(pattern.get("weight", 0.10)) * strategy_multiplier, support_budget)
+            if direction in core_directions and weighted > 0:
+                votes.append((
+                    direction,
+                    weighted,
+                    f"Supporting {mode.upper()} price action: {pattern.get('name')}",
+                    "zones",
+                ))
+                support_budget -= weighted
+                if support_budget <= 0:
+                    break
+
+        # Wyckoff is contextual confirmation, never an independent strategy.
+        # Springs/upthrusts and volume/range phase evidence share a smaller cap.
+        wyckoff_budget = 0.20
+        for pattern in sorted(pattern_data.get("wyckoff", []), key=lambda item: item.get("weight", 0), reverse=True):
+            direction = pattern.get("direction")
+            weighted = min(float(pattern.get("weight", 0.10)) * 0.50, wyckoff_budget)
+            if direction in core_directions and weighted > 0:
+                votes.append((
+                    direction,
+                    weighted,
+                    f"Supporting Wyckoff context: {pattern.get('name')}",
+                    "liquidity",
+                ))
+                wyckoff_budget -= weighted
+                if wyckoff_budget <= 0:
+                    break
 
     # --- Session timing ------------------------------------------------
     killzone = analysis["killzone"]
@@ -431,10 +481,9 @@ def _stop_and_target(analysis: dict, direction: str, decimals: int) -> dict:
     min_pips = settings.get_float("sl_min_pips", SL_MIN_PIPS_DEFAULT)
     stop_dist = max(stop_dist, 0.5 * atr_val, min_pips * pip)  # never inside noise/spread
     stop_basis = "structure"
-    if stop_dist > sl_cap:
-        # structure is unrealistically far — cap at the configured percent
-        stop_dist = max(sl_cap, 0.25 * atr_val, min_pips * pip)
-        stop_basis = "percent_cap"
+    stop_exceeds_cap = stop_dist > sl_cap
+    if stop_exceeds_cap:
+        stop_basis = "structure_beyond_risk_limit"
     stop = price - stop_dist if bullish else price + stop_dist
 
     # --- target: liquidity within reach, else capped risk multiple ------
@@ -480,6 +529,7 @@ def _stop_and_target(analysis: dict, direction: str, decimals: int) -> dict:
         "sl_pct": round(risk / price * 100, 3),
         "tp_pct": round(reward / price * 100, 3),
         "stop_basis": stop_basis,
+        "stop_exceeds_cap": stop_exceeds_cap,
         "target_basis": target_basis,
     }
 

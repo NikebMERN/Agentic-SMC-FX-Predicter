@@ -9,10 +9,13 @@ def auth(token):
 
 def test_healthz(client):
     res = client.get("/healthz")
-    assert res.status_code in (200, 503)
+    assert res.status_code == 200
     body = res.get_json()
-    assert "database" in body
-    assert "status" in body
+    assert body["status"] == "alive"
+
+    ready = client.get("/readyz")
+    assert ready.status_code in (200, 503)
+    assert "database" in ready.get_json()
 
 
 def test_close_trade_requires_auth(client):

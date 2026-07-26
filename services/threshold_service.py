@@ -157,7 +157,11 @@ def resolve_thresholds(
     use_cache: bool = True,
 ) -> tuple[SmcIctThresholds, int | None]:
     """Return resolved thresholds and active version id (if any)."""
-    version = get_active_version()
+    try:
+        version = get_active_version()
+    except Exception as exc:
+        log.warning("Threshold database unavailable; using built-in defaults: %s", exc)
+        return _resolve_pure(pair, timeframe, trading_style), None
     version_id = version.id if version else None
     cache_key = (version_id, pair.upper(), timeframe, trading_style.lower())
     now = time.time()
@@ -166,8 +170,13 @@ def resolve_thresholds(
         if now - ts < _CACHE_TTL_SECONDS:
             return cached, vid
 
-    version_config = _active_version_config()
-    override = _load_override_patch(pair, timeframe, trading_style)
+    try:
+        version_config = _active_version_config()
+        override = _load_override_patch(pair, timeframe, trading_style)
+    except Exception as exc:
+        log.warning("Threshold overrides unavailable; using built-in defaults: %s", exc)
+        version_config = None
+        override = None
     resolved = _resolve_pure(
         pair,
         timeframe,

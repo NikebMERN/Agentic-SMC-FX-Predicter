@@ -14,6 +14,8 @@ const NAV = [
   ["settings", "Settings"],
   ["thresholds", "Thresholds"],
   ["ml-ops", "ML Operations"],
+  ["performance", "Performance"],
+  ["operations", "Operations"],
   ["logs", "Logs"],
   ["audit", "Audit"],
 ];

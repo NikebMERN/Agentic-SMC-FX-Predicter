@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import PasswordField from "../components/PasswordField.jsx";
-import { useAuth } from "../context/AuthContext.jsx";
+import { useAuth } from "../context/auth.js";
 import { forgotPassword, resetPassword } from "../api/client.js";
 
 export default function LoginPage() {

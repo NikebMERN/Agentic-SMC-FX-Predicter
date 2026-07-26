@@ -50,6 +50,12 @@ def record_prediction_from_result(
         feature_schema_version=(result.get("ml") or {}).get("feature_schema_version"),
         snapshot_records=result.get("candle_snapshot"),
         source=source,
+        risk_reward_planned=decision.get("risk_reward"),
+        account_type=result.get("account_type") or source,
+        volatility=(result.get("analysis_summary") or {}).get("atr"),
+        spread=(result.get("validation") or {}).get("spread"),
+        execution_delay_ms=result.get("execution_delay_ms"),
+        manual_notes=result.get("manual_notes"),
     )
     if review and user_id:
         from services.confirmation_monitor import maybe_create_watch

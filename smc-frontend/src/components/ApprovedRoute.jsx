@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { useAuth } from "../context/AuthContext.jsx";
+import { useAuth } from "../context/auth.js";
 
 /** Approved users with prediction access. */
 export default function ApprovedRoute({ children }) {

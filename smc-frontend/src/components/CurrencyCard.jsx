@@ -1,11 +1,12 @@
 import { motion } from "framer-motion";
+const MotionButton = motion.button;
 
 export default function CurrencyCard({ symbol, onClick }) {
   const base = symbol.slice(0, 3);
   const quote = symbol.slice(3);
 
   return (
-    <motion.button
+    <MotionButton
       type="button"
       whileHover={{ scale: 1.03 }}
       whileTap={{ scale: 0.97 }}
@@ -18,6 +19,6 @@ export default function CurrencyCard({ symbol, onClick }) {
         <span className="text-sky-400">/{quote}</span>
       </p>
       <p className="mt-2 text-xs text-slate-500">Tap to analyze</p>
-    </motion.button>
+    </MotionButton>
   );
 }

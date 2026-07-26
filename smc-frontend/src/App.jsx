@@ -1,21 +1,24 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import PublicLayout from "./components/PublicLayout.jsx";
-import HomePage from "./pages/HomePage.jsx";
-import LoginPage from "./pages/LoginPage.jsx";
-import RegisterPage from "./pages/RegisterPage.jsx";
-import FeedbackPage from "./pages/FeedbackPage.jsx";
-import HistoryPage from "./pages/HistoryPage.jsx";
-import PredictPage from "./pages/PredictPage.jsx";
-import TelegramPage from "./pages/TelegramPage.jsx";
-import AlertsPage from "./pages/AlertsPage.jsx";
-import ConfirmPage from "./pages/ConfirmPage.jsx";
+
+const HomePage = lazy(() => import("./pages/HomePage.jsx"));
+const LoginPage = lazy(() => import("./pages/LoginPage.jsx"));
+const RegisterPage = lazy(() => import("./pages/RegisterPage.jsx"));
+const FeedbackPage = lazy(() => import("./pages/FeedbackPage.jsx"));
+const HistoryPage = lazy(() => import("./pages/HistoryPage.jsx"));
+const PredictPage = lazy(() => import("./pages/PredictPage.jsx"));
+const TelegramPage = lazy(() => import("./pages/TelegramPage.jsx"));
+const AlertsPage = lazy(() => import("./pages/AlertsPage.jsx"));
+const ConfirmPage = lazy(() => import("./pages/ConfirmPage.jsx"));
 
 export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, "") || "/"}>
+        <Suspense fallback={<div className="mx-auto max-w-6xl px-4 py-12 text-slate-400">Loading page…</div>}>
         <Routes>
           <Route element={<PublicLayout />}>
             <Route path="/" element={<HomePage />} />
@@ -81,6 +84,7 @@ export default function App() {
           <Route path="/dashboard" element={<Navigate to="/feedback" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </Suspense>
       </BrowserRouter>
     </AuthProvider>
   );

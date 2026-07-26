@@ -33,7 +33,7 @@ def run_walk_forward_backtest(
     for col in feature_cols:
         df[col] = df["features"].apply(lambda f: f.get(col, 0))
 
-    all_y, all_p, accepted = [], [], 0
+    all_y, all_p, all_returns, accepted = [], [], [], 0
     window_metrics = []
 
     for win in windows:
@@ -58,6 +58,11 @@ def run_walk_forward_backtest(
         accepted += int((proba >= accept_threshold).sum())
         all_y.extend(y_test.tolist())
         all_p.extend(proba.tolist())
+        rr_values = test_df.get("risk_reward", pd.Series(1.5, index=test_df.index)).astype(float)
+        all_returns.extend([
+            (float(rr) if int(label) == 1 else -1.0) if probability >= accept_threshold else 0.0
+            for label, probability, rr in zip(y_test, proba, rr_values)
+        ])
         window_metrics.append({
             "test_start": win.test_start.isoformat(),
             "test_end": win.test_end.isoformat(),
@@ -71,6 +76,18 @@ def run_walk_forward_backtest(
     y_arr = np.array(all_y)
     p_arr = np.array(all_p)
     preds = (p_arr >= 0.5).astype(int)
+    returns = np.array(all_returns, dtype=float)
+    traded = returns[returns != 0]
+    gross_profit = float(traded[traded > 0].sum()) if len(traded) else 0.0
+    gross_loss = abs(float(traded[traded < 0].sum())) if len(traded) else 0.0
+    equity = np.concatenate(([0.0], np.cumsum(traded))) if len(traded) else np.array([0.0])
+    peaks = np.maximum.accumulate(equity)
+    drawdown = peaks - equity
+    expectancy = float(traded.mean()) if len(traded) else 0.0
+    sharpe = (
+        float(traded.mean() / traded.std(ddof=1) * np.sqrt(len(traded)))
+        if len(traded) > 1 and traded.std(ddof=1) > 0 else 0.0
+    )
     return {
         "windows": len(window_metrics),
         "total_signals": len(all_y),
@@ -82,6 +99,10 @@ def run_walk_forward_backtest(
         "f1": float(f1_score(y_arr, preds, zero_division=0)),
         "brier_score": float(brier_score_loss(y_arr, p_arr)),
         "walk_forward_score": float(np.mean([w["f1"] for w in window_metrics])),
+        "profit_factor": gross_profit / gross_loss if gross_loss else (999.0 if gross_profit else 0.0),
+        "expectancy": expectancy,
+        "max_drawdown": float(drawdown.max()) if len(drawdown) else 0.0,
+        "sharpe_ratio": sharpe,
         "window_metrics": window_metrics,
         "passed": True,
     }

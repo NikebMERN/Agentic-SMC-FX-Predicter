@@ -1,0 +1,124 @@
+services:
+  - type: web
+    name: smartflow-api
+    runtime: docker
+    plan: standard
+    numInstances: 2
+    dockerfilePath: ./Dockerfile
+    dockerCommand: gunicorn --config deploy/gunicorn.conf.py app:app
+    healthCheckPath: /readyz
+    maxShutdownDelaySeconds: 60
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SERVICE_ROLE
+        value: api
+      - key: BACKGROUND_SERVICES_ENABLED
+        value: "false"
+      - key: LOG_FORMAT
+        value: json
+      - key: LOG_TO_FILE
+        value: "false"
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: smartflow-cache
+          property: connectionString
+      - key: RATELIMIT_STORAGE_URI
+        fromService:
+          type: keyvalue
+          name: smartflow-cache
+          property: connectionString
+      - key: SENTRY_DSN
+        sync: false
+      - key: SYSTEM_RESTART_WEBHOOK
+        sync: false
+
+  - type: worker
+    name: smartflow-worker
+    runtime: docker
+    plan: standard
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python run.py ai-worker
+    maxShutdownDelaySeconds: 120
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SERVICE_ROLE
+        value: ai-worker
+      - key: BACKGROUND_SERVICES_ENABLED
+        value: "true"
+      - key: LOG_FORMAT
+        value: json
+      - key: LOG_TO_FILE
+        value: "false"
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: OANDA_API_KEY
+        sync: false
+      - key: ALPHA_VANTAGE_API_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: smartflow-cache
+          property: connectionString
+
+  - type: worker
+    name: smartflow-scheduler
+    runtime: docker
+    plan: standard
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python run.py scheduler
+    maxShutdownDelaySeconds: 120
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SERVICE_ROLE
+        value: scheduler
+      - key: BACKGROUND_SERVICES_ENABLED
+        value: "true"
+      - key: LOG_FORMAT
+        value: json
+      - key: LOG_TO_FILE
+        value: "false"
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: OANDA_API_KEY
+        sync: false
+      - key: ALPHA_VANTAGE_API_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: smartflow-cache
+          property: connectionString
+
+  - type: keyvalue
+    name: smartflow-cache
+    plan: standard
+    ipAllowList: []
+    maxmemoryPolicy: noeviction

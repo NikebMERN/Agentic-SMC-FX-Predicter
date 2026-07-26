@@ -6,6 +6,7 @@ console and to a rotating file under logs/smartflow.log so production
 issues can be diagnosed after the fact.
 """
 import logging
+import json
 import os
 from logging.handlers import RotatingFileHandler
 
@@ -21,6 +22,20 @@ _FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 _configured = False
 
 
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        payload = {
+            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
+            "severity": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "service": os.getenv("SERVICE_ROLE", "unknown"),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, default=str)
+
+
 def _configure_root():
     global _configured
     if _configured:
@@ -28,17 +43,22 @@ def _configure_root():
 
     root = logging.getLogger("smartflow")
     root.setLevel(LOG_LEVEL)
-    formatter = logging.Formatter(_FORMAT)
+    formatter = (
+        JsonFormatter()
+        if os.getenv("LOG_FORMAT", "text").lower() == "json"
+        else logging.Formatter(_FORMAT)
+    )
 
     console = logging.StreamHandler()
     console.setFormatter(formatter)
     root.addHandler(console)
 
-    file_handler = RotatingFileHandler(
-        LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
-    )
-    file_handler.setFormatter(formatter)
-    root.addHandler(file_handler)
+    if os.getenv("LOG_TO_FILE", "true").lower() in {"1", "true", "yes", "on"}:
+        file_handler = RotatingFileHandler(
+            LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        )
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
 
     root.propagate = False
     _configured = True

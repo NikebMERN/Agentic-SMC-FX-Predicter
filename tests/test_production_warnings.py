@@ -21,20 +21,14 @@ def test_log_production_warnings_lists_misconfigurations(monkeypatch, caplog):
     import utils.config as cfg
 
     importlib.reload(cfg)
+    monkeypatch.setattr(cfg, "OANDA_API_KEY", None)
+    monkeypatch.setattr(cfg, "ALPHA_VANTAGE_API_KEY", None)
+    monkeypatch.setattr(cfg, "ALLOW_CACHE_ONLY_PRODUCTION", False)
+    monkeypatch.setattr("utils.mailer.is_configured", lambda: False)
 
-    from run import log_production_warnings
+    from run import production_config_issues
 
-    root = logging.getLogger("smartflow")
-    old_propagate = root.propagate
-    root.propagate = True
-    try:
-        with caplog.at_level(logging.WARNING):
-            log_production_warnings()
-    finally:
-        root.propagate = old_propagate
-
-    text = caplog.text
-    assert "Production configuration warnings" in text
+    text = "\n".join(production_config_issues())
     assert "CORS_ORIGINS" in text
     assert "SMTP" in text
     assert "SQLite" in text

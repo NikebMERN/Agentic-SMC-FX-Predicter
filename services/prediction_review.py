@@ -239,6 +239,12 @@ def create_review(
     snapshot_df: pd.DataFrame | None = None,
     snapshot_records: list[dict] | None = None,
     source: str = "web",
+    risk_reward_planned: float | None = None,
+    account_type: str | None = None,
+    volatility: float | None = None,
+    spread: float | None = None,
+    execution_delay_ms: int | None = None,
+    manual_notes: str | None = None,
 ) -> PredictionReview | None:
     db = SessionLocal()
     try:
@@ -273,6 +279,12 @@ def create_review(
             meta_ml_probability=meta_ml_probability,
             confidence_before_ml=confidence_before_ml,
             final_confidence=final_confidence,
+            risk_reward_planned=risk_reward_planned,
+            account_type=account_type,
+            volatility=volatility,
+            spread=spread,
+            execution_delay_ms=execution_delay_ms,
+            manual_notes=manual_notes,
             trading_style=trading_style,
             rule_engine_version=rule_engine_version or "v1",
             feature_schema_version=feature_schema_version or "v1",

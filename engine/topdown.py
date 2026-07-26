@@ -210,16 +210,18 @@ def topdown_analyze(
     # Layer D — execution confirmation (lower TF)
     execution_confirmed = False
     execution_tf = None
+    execution_details = None
+    target_direction = (primary_htf or {}).get("direction")
     for tf in ladder.get("execution", []):
         df_exec = frames.get(tf)
         if df_exec is None or len(df_exec) < 30:
             continue
         exec_analysis = confluence.analyze(df_exec, symbol, interval=tf, thresholds=thresholds, trading_style=style)
         layer_results[f"exec_{tf}"] = {"layer": "execution", "analysis": exec_analysis}
-        events = exec_analysis["structure"]["events"]
-        if events:
-            ev = events[-1]
-            if ev["kind"] in ("CHoCH", "MSS", "BOS") and ev.get("displacement"):
+        if target_direction in ("bullish", "bearish"):
+            from engine.institutional import execution_confirmation
+            execution_details = execution_confirmation(exec_analysis, target_direction, max_bars=8)
+            if execution_details["confirmed"]:
                 execution_confirmed = True
                 execution_tf = tf
                 break
@@ -239,6 +241,7 @@ def topdown_analyze(
     analysis["structure_biases"] = structure_biases
     analysis["execution_confirmed"] = execution_confirmed
     analysis["execution_tf"] = execution_tf
+    analysis["execution_details"] = execution_details
     analysis["trading_style"] = style
     analysis["threshold_version_id"] = threshold_version_id
     analysis["layer_results"] = layer_results
@@ -286,6 +289,7 @@ def topdown_analyze(
         "liquidity_draw": draw,
         "execution_confirmed": execution_confirmed,
         "execution_tf": execution_tf,
+        "execution_details": execution_details,
         "layer_results": {k: v.get("layer") for k, v in layer_results.items()},
         "notes": notes,
     }

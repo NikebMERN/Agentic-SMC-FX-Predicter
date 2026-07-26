@@ -336,6 +336,23 @@ def reconcile_training_record(
         row.final_label = final_label
         row.conflict = conflict
         readiness = _apply_cross_check(row, review, uf, mv)
+        from services.feedback_validation import validate_feedback
+        validation = validate_feedback(row, review, uf, mv, so)
+        row.dataset_tier = validation["tier"]
+        row.validation_score = validation["score"]
+        row.validation_reasons_json = json.dumps(validation["reasons"])
+        row.suspicious = validation["suspicious"]
+        if validation["duplicate_feedback_id"]:
+            duplicate_feedback = db.query(UserFeedback).filter(
+                UserFeedback.id == validation["duplicate_feedback_id"]
+            ).first()
+            duplicate_record = (
+                db.query(TrainingRecord)
+                .filter(TrainingRecord.user_feedback_id == duplicate_feedback.id)
+                .first()
+                if duplicate_feedback else None
+            )
+            row.duplicate_of_id = duplicate_record.id if duplicate_record else None
         db.commit()
         db.refresh(row)
 
@@ -435,6 +452,12 @@ def list_training_records(
                 "user_truthful": not r.conflict if uf and mv else None,
                 "label_quality_score": quality,
                 "admin_status": r.admin_status,
+                "dataset_tier": r.dataset_tier,
+                "validation_score": r.validation_score,
+                "validation_reasons": json.loads(r.validation_reasons_json or "[]"),
+                "suspicious": r.suspicious,
+                "institutional_example": r.institutional_example,
+                "duplicate_of_id": r.duplicate_of_id,
                 "admin_notes": r.admin_notes,
                 "auto_approved": r.admin_status == "APPROVED" and (r.admin_notes or "").startswith("Auto-approved"),
                 "needs_manual_review": needs_manual_review(r),
@@ -492,7 +515,12 @@ def export_training_dataset(
     try:
         q = db.query(TrainingRecord).order_by(TrainingRecord.id.desc())
         if approved_only:
-            q = q.filter(TrainingRecord.admin_status == "APPROVED")
+            q = q.filter(
+                TrainingRecord.admin_status == "APPROVED",
+                TrainingRecord.dataset_tier.in_(("APPROVED", "GOLD")),
+                TrainingRecord.suspicious.is_(False),
+                TrainingRecord.validation_score >= 0.75,
+            )
         rows = q.limit(limit).all()
         out = []
         for r in rows:
@@ -515,6 +543,8 @@ def export_training_dataset(
                     "conflict": r.conflict,
                     "label_quality_score": r.label_quality_score,
                     "admin_status": r.admin_status,
+                    "dataset_tier": r.dataset_tier,
+                    "validation_score": r.validation_score,
                     "cross_check_summary": readiness["summary"],
                 },
             })

@@ -1,18 +1,10 @@
+import { outcomeLabel } from "../utils/feedbackLabels.js";
+
 const OUTCOME_OPTIONS = [
   { value: "SUCCESSFUL", label: "Successful", className: "border-green-600/70 bg-green-950/30 text-green-300 hover:bg-green-950/50" },
   { value: "FAILED", label: "Failed", className: "border-red-700/60 bg-red-950/30 text-red-300 hover:bg-red-950/50" },
   { value: "DID_NOT_TAKE", label: "Didn't take", className: "border-slate-600 text-slate-300 hover:bg-slate-800" },
 ];
-
-export function outcomeLabel(feedback) {
-  const map = {
-    SUCCESSFUL: "Successful",
-    FAILED: "Failed",
-    DID_NOT_TAKE: "Didn't take",
-    UNCLEAR: "Unclear",
-  };
-  return map[feedback] || feedback;
-}
 
 export default function OutcomeFeedback({ review, busy, onSubmit, compact = false }) {
   if (!review?.can_record_outcome) {

@@ -265,6 +265,7 @@ def _predict_locked(
         "calculator": calculator,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "data_source": source,
+        "data_diagnostics": __import__("engine.data", fromlist=["get_last_data_diagnostics"]).get_last_data_diagnostics(),
         "last_candle": str(analysis["last_time"]),
         "candles": analysis["bars"],
         "decision": decision,
@@ -306,6 +307,41 @@ def format_result_text(result: dict, markdown: bool = False) -> str:
     lines = [
         f"{b}{result['symbol']} - {d['action']}{b}",
     ]
+    calc = result.get("calculator") or {}
+    summary = result.get("analysis_summary") or {}
+    confirmation = d.get("institutional_confirmation") or {}
+    confirmation_reasons = confirmation.get("reasons") or []
+    if isinstance(confirmation_reasons, str):
+        confirmation_reasons = [confirmation_reasons]
+    confirmation_reason = (
+        "; ".join(str(reason) for reason in confirmation_reasons)
+        or next(
+            (str(reason) for reason in d.get("reasoning", []) if any(
+                key in str(reason).lower() for key in ("confirm", "mss", "choch")
+            )),
+            "Rule-based institutional confluence",
+        )
+    )
+    direction = d.get("direction") or d.get("action") or "N/A"
+    session = d.get("killzone") or summary.get("killzone") or "Outside kill zone"
+    trend = d.get("market_trend") or summary.get("trend") or "N/A"
+    lines += [
+        f"Pair: {result['symbol']}",
+        f"Direction: {direction}",
+        f"Entry: {d.get('entry', 'N/A')}",
+        f"Stop Loss: {d.get('stop_loss') or d.get('invalidation_price') or 'N/A'}",
+        f"Take Profit: {d.get('take_profit') or d.get('target_liquidity') or 'N/A'}",
+        f"Risk Reward: {d.get('risk_reward', 'N/A')}",
+        f"Confidence: {d.get('confidence', 0):.0%}",
+        f"Lot Size: {calc.get('lot_size', 'N/A')}",
+        f"Position Size: {calc.get('position_size', 'N/A')}",
+        f"Strategy: {d.get('strategy', result.get('strategy', 'both'))}",
+        f"Timeframe: {result.get('interval', 'N/A')}",
+        f"Session: {session}",
+        f"Trend: {trend}",
+        f"Confluence Score: {d.get('score', d.get('weighted_score', 'N/A'))}",
+        f"Confirmation reason: {confirmation_reason}",
+    ]
     mtf_ctx = result.get("mtf")
     if mtf_ctx:
         tfs = mtf_ctx.get("timeframes", {})
@@ -328,9 +364,8 @@ def format_result_text(result: dict, markdown: bool = False) -> str:
             draw = mtf_ctx["liquidity_draw"]
             lines.append(f"Draw on liquidity: {draw['level']} ({draw['pips_away']} pips away)")
     lines += [
-        f"Strategy: {d.get('strategy', result.get('strategy', 'both'))}",
-        f"Confidence: {d['confidence']:.0%} (rules {d['rule_confidence']:.0%}"
-        + (f", ML {d['ml_confidence']:.0%})" if d.get("ml_confidence") is not None else ")"),
+        f"Confidence detail: rules {d.get('rule_confidence', d.get('confidence', 0)):.0%}"
+        + (f", ML {d['ml_confidence']:.0%}" if d.get("ml_confidence") is not None else ""),
         f"Scores: bullish {d['scores']['bullish']} vs bearish {d['scores']['bearish']} "
         f"({d['confluences']} valid confluences)",
     ]
@@ -349,13 +384,14 @@ def format_result_text(result: dict, markdown: bool = False) -> str:
             if d.get("tp_pips") is not None else ""
         )
         lines += [
-            f"Entry: {d['entry']}",
-            f"Stop Loss: {d.get('invalidation_price') or d.get('stop_loss')}{sl_extra}",
-            f"Take Profit: {d.get('target_liquidity') or d.get('take_profit')}{tp_extra}",
-            f"Risk/Reward: {d['risk_reward']}",
+            f"Level distances: SL{sl_extra or ' N/A'} | TP{tp_extra or ' N/A'}",
         ]
-        calc = result.get("calculator")
-        if calc:
+        if calc and all(
+            key in calc for key in (
+                "balance", "risk_pct", "risk_amount", "reward_amount",
+                "pip_value_per_lot_usd", "sl_pips", "tp_pips",
+            )
+        ):
             approx = " (approx.)" if calc.get("approximate") else ""
             lines += [
                 "",

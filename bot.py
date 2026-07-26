@@ -1,6 +1,7 @@
 # bot.py
 """Telegram bot: pick a pair, run full pipeline, per-user delivery via /link."""
 import asyncio
+import math
 
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup  # type: ignore
 from telegram.error import Conflict, NetworkError, RetryAfter, TimedOut  # type: ignore
@@ -8,6 +9,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 
 from services.user_access import decrement_quota, increment_quota, can_use_predictions, DEFAULT_SIGNALS_QUOTA
 from engine.data import normalize_symbol
+from engine.risk_calc import calculate_lot_from_market
 from engine.pipeline import predict_symbol, format_result_text
 from services.prediction_record import record_prediction_from_result
 from services.telegram_link import get_user_by_chat, get_or_register_telegram_user, redeem_link_code, unlink_user
@@ -300,6 +302,54 @@ async def pairs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_reply(update.message, "Supported pairs:", reply_markup=_pair_keyboard())
 
 
+def parse_lot_command_args(args) -> tuple[str, float, float]:
+    if len(args) != 3:
+        raise ValueError("Usage: /lot EURUSD 1000 1%")
+    symbol_raw, balance_raw, risk_raw = args
+    symbol = normalize_symbol(symbol_raw)
+    supported = {normalize_symbol(pair) for pair in get_supported_pairs()}
+    supported.add("XAUUSD")
+    if symbol not in supported:
+        raise ValueError(f"Unsupported symbol: {symbol}")
+    try:
+        balance = float(str(balance_raw).replace(",", "").strip())
+        risk_pct = float(str(risk_raw).strip().removesuffix("%"))
+    except ValueError as exc:
+        raise ValueError("Balance and risk must be numbers, for example /lot EURUSD 1000 1%") from exc
+    if not math.isfinite(balance) or balance <= 0:
+        raise ValueError("Balance must be a positive number")
+    if not math.isfinite(risk_pct) or not 0 < risk_pct <= 10:
+        raise ValueError("Risk percentage must be greater than 0% and no more than 10%")
+    return symbol, balance, risk_pct
+
+
+async def lot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        symbol, balance, risk_pct = parse_lot_command_args(context.args)
+        result = await asyncio.to_thread(
+            calculate_lot_from_market, symbol, balance, risk_pct
+        )
+    except (ValueError, TypeError) as exc:
+        await safe_reply(update.message, f"Lot calculation failed: {exc}")
+        return
+    except Exception as exc:
+        log.exception("Telegram lot calculation failed for %s", context.args[:1])
+        await safe_reply(update.message, "Lot calculation is temporarily unavailable. Please try again.")
+        return
+    await safe_reply(
+        update.message,
+        f"Risk sizing - {result['symbol']}\n\n"
+        f"Balance: ${result['balance']:.2f}\n"
+        f"Risk: {result['risk_pct']:.2f}% (${result['requested_risk_amount']:.2f})\n"
+        f"Entry: {result['entry']}\n"
+        f"Stop Loss: {result['stop_loss']} ({result['sl_pips']} pips, {result['stop_method']})\n"
+        f"Pip value: ${result['pip_value_per_lot_usd']:.2f}/lot\n"
+        f"Recommended lot size: {result['lot_size']:.2f}\n"
+        f"Position size: {result['position_size']:.2f} units\n"
+        f"Data source: {result['data_source']}"
+    )
+
+
 async def _clear_webhook_for_polling(bot: Bot) -> bool:
     """Drop any webhook so long-polling (getUpdates) is allowed."""
     from utils.telegram_http import is_telegram_network_error
@@ -350,6 +400,7 @@ def build_application():
     application.add_handler(CommandHandler("link", link_command))
     application.add_handler(CommandHandler("unlink", unlink_command))
     application.add_handler(CommandHandler("feedback", feedback_command))
+    application.add_handler(CommandHandler("lot", lot_command))
     application.add_handler(CallbackQueryHandler(handle_pair_selection, pattern=r"^predict:"))
     application.add_error_handler(_on_error)
     return application

@@ -85,6 +85,7 @@ def detect_structure(
     si = 0
     confirmed_highs: list[dict] = []
     confirmed_lows: list[dict] = []
+    rejected_breaks: list[dict] = []
 
     for i in range(len(df)):
         # Swings become usable only once confirmed (window bars later).
@@ -104,8 +105,31 @@ def detect_structure(
             atr_np is not None and not np.isnan(atr_np[i]) and atr_np[i] > 0
             and body > displacement_mult * atr_np[i]
         )
+        candle_range = max(float(df["High"].iloc[i] - df["Low"].iloc[i]), 1e-12)
+        body_ratio = body / candle_range
+        atr_buffer = (
+            0.05 * atr_np[i]
+            if atr_np is not None and not np.isnan(atr_np[i]) and atr_np[i] > 0
+            else 0.0
+        )
+        required_break = max(min_break_abs, atr_buffer)
 
-        if ref_high is not None and close > ref_high["price"] + min_break_abs:
+        bullish_break = ref_high is not None and close > ref_high["price"] + required_break
+        bearish_break = ref_low is not None and close < ref_low["price"] - required_break
+        if bullish_break and (close <= opens[i] or body_ratio < 0.30):
+            rejected_breaks.append({
+                "pos": i, "direction": "bullish", "level": ref_high["price"],
+                "reason": "weak or opposing break candle",
+            })
+            bullish_break = False
+        if bearish_break and (close >= opens[i] or body_ratio < 0.30):
+            rejected_breaks.append({
+                "pos": i, "direction": "bearish", "level": ref_low["price"],
+                "reason": "weak or opposing break candle",
+            })
+            bearish_break = False
+
+        if bullish_break:
             origin = confirmed_lows[-1] if confirmed_lows else None
             kind = "BOS" if trend >= 0 else "CHoCH"
             events.append({
@@ -115,12 +139,15 @@ def detect_structure(
                 "direction": "bullish",
                 "level": ref_high["price"],
                 "displacement": displaced,
+                "body_ratio": round(body_ratio, 4),
+                "break_distance": float(close - ref_high["price"]),
+                "quality": "institutional" if displaced else "confirmed",
                 "origin_pos": origin["pos"] if origin else None,
                 "origin_price": origin["price"] if origin else None,
             })
             trend = 1
             ref_high = None  # wait for the next confirmed swing high
-        elif ref_low is not None and close < ref_low["price"] - min_break_abs:
+        elif bearish_break:
             origin = confirmed_highs[-1] if confirmed_highs else None
             kind = "BOS" if trend <= 0 else "CHoCH"
             events.append({
@@ -130,13 +157,16 @@ def detect_structure(
                 "direction": "bearish",
                 "level": ref_low["price"],
                 "displacement": displaced,
+                "body_ratio": round(body_ratio, 4),
+                "break_distance": float(ref_low["price"] - close),
+                "quality": "institutional" if displaced else "confirmed",
                 "origin_pos": origin["pos"] if origin else None,
                 "origin_price": origin["price"] if origin else None,
             })
             trend = -1
             ref_low = None
 
-    return {"events": events, "trend": trend}
+    return {"events": events, "trend": trend, "rejected_breaks": rejected_breaks}
 
 
 def detect_mss(

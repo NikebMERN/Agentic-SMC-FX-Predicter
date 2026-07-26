@@ -22,12 +22,21 @@ _connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite"
 if DATABASE_URL.startswith("mysql+pymysql://") and DATABASE_SSL_MODE:
     if DATABASE_SSL_MODE not in {"disabled", "disable", "false", "0"}:
         _connect_args["ssl"] = {"verify_mode": "none"}
-engine = create_engine(
-    DATABASE_URL,
-    echo=False,
-    pool_pre_ping=True,
-    connect_args=_connect_args,
-)
+_engine_options = {
+    "echo": False,
+    "pool_pre_ping": True,
+    "connect_args": _connect_args,
+}
+if not DATABASE_URL.startswith("sqlite"):
+    _engine_options.update({
+        "pool_size": int(os.getenv("DB_POOL_SIZE", "10")),
+        "max_overflow": int(os.getenv("DB_MAX_OVERFLOW", "20")),
+        "pool_timeout": int(os.getenv("DB_POOL_TIMEOUT_SECONDS", "30")),
+        "pool_recycle": int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800")),
+    })
+engine = create_engine(DATABASE_URL, **_engine_options)
 
 # Session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(
+    autocommit=False, autoflush=False, expire_on_commit=False, bind=engine
+)

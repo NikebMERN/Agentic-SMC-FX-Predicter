@@ -64,12 +64,11 @@ def apply_ml_gate(
 
     original_action = action
     if action not in (ACTION_NO_TRADE, ACTION_WAIT) and ml_probability < no_trade_t:
-        action = ACTION_NO_TRADE
-        vetoes.append(f"VETO: ML quality {ml_probability:.0%} below {no_trade_t:.0%}")
-        reasoning.append("ML gate downgraded to NO_TRADE")
+        final_conf = min(final_conf, no_trade_t)
+        reasoning.append("ML quality is weak; rule action retained and confidence reduced")
     elif action not in (ACTION_NO_TRADE, ACTION_WAIT) and ml_probability < wait_t:
-        action = ACTION_WAIT
-        reasoning.append(f"ML gate downgraded to WAIT (P(win)={ml_probability:.0%})")
+        final_conf = min(final_conf, wait_t)
+        reasoning.append("ML quality is cautious; rule action retained")
 
     out = dict(decision)
     out.update({

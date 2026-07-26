@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client.js";
-import { useAuth } from "../context/AuthContext.jsx";
+import { useAuth } from "../context/auth.js";
 import ApprovedRoute from "../components/ApprovedRoute.jsx";
 import MarketChart from "../components/MarketChart.jsx";
-import TradeEntryFeedback, { isTradeAction } from "../components/TradeEntryFeedback.jsx";
+import TradeEntryFeedback from "../components/TradeEntryFeedback.jsx";
+import { isTradeAction } from "../utils/tradeActions.js";
 
 const ACTION_COLOR = {
   BUY_BIAS: "text-green-400",

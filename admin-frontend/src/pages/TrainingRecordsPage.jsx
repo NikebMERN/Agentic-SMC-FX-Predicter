@@ -83,6 +83,20 @@ export default function TrainingRecordsPage() {
     }
   }
 
+  async function govern(id, changes) {
+    setError("");
+    try {
+      await api(`/training-records/${id}/governance`, {
+        method: "PATCH",
+        body: JSON.stringify(changes),
+      });
+      setNotice(`Record ${id} governance updated`);
+      await loadRecords(filter);
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
   async function exportDataset() {
     setError("");
     try {
@@ -200,6 +214,29 @@ export default function TrainingRecordsPage() {
                   <span>Quality score: {formatQuality(r.label_quality_score)}</span>
                   <span>Interval: {r.interval ?? "—"}</span>
                   <span>Reviewed: {formatTimestamp(r.reviewed_at)}</span>
+                  <span>Dataset: {r.dataset_tier ?? "PENDING_REVIEW"}</span>
+                  <span>Validation: {formatQuality(r.validation_score)}</span>
+                  <span>Suspicious: {r.suspicious ? "yes" : "no"}</span>
+                </div>
+                {r.validation_reasons?.length > 0 && (
+                  <p className="mb-2 text-[#f0883e]">Validation: {r.validation_reasons.join("; ")}</p>
+                )}
+                <div className="mb-3 flex flex-wrap gap-2">
+                  <select
+                    value={r.dataset_tier || "PENDING_REVIEW"}
+                    onChange={(e) => govern(r.id, { dataset_tier: e.target.value })}
+                    className="rounded border border-[#30363d] bg-[#0d1117] px-2 py-1"
+                  >
+                    {["PENDING_REVIEW", "APPROVED", "REJECTED", "GOLD"].map((tier) => (
+                      <option key={tier} value={tier}>{tier}</option>
+                    ))}
+                  </select>
+                  <button type="button" onClick={() => govern(r.id, { suspicious: !r.suspicious })} className="rounded border border-[#30363d] px-2 py-1">
+                    {r.suspicious ? "Clear suspicious" : "Flag suspicious"}
+                  </button>
+                  <button type="button" onClick={() => govern(r.id, { institutional_example: !r.institutional_example })} className="rounded border border-[#30363d] px-2 py-1">
+                    {r.institutional_example ? "Remove institutional mark" : "Mark institutional"}
+                  </button>
                 </div>
                 {r.admin_notes && <p className="mb-2">Notes: {r.admin_notes}</p>}
                 {r.training_sample ? (

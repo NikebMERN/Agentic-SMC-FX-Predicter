@@ -1,6 +1,4 @@
-import { isTradeAction } from "../utils/tradeActions.js";
-
-export { isTradeAction };
+import { tradeEntryLabel } from "../utils/feedbackLabels.js";
 
 const TRADE_ENTRY_OPTIONS = [
   {
@@ -15,14 +13,10 @@ const TRADE_ENTRY_OPTIONS = [
   },
 ];
 
-const TRADE_ENTRY_LABELS = {
+const _TRADE_ENTRY_LABELS = {
   ENTERED: "Accepted — entered trade",
   DID_NOT_TAKE: "Rejected — did not take",
 };
-
-export function tradeEntryLabel(feedback) {
-  return TRADE_ENTRY_LABELS[feedback] || feedback;
-}
 
 export default function TradeEntryFeedback({ review, busy, onSubmit, compact = false }) {
   if (!review?.can_record_trade_entry) {

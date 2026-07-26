@@ -36,6 +36,7 @@ def test_forgot_password_returns_dev_code_in_development(
     import app as app_module
 
     importlib.reload(app_module)
+    monkeypatch.setattr("services.user_service.mailer.send_email", lambda *args, **kwargs: False)
 
     user = register_and_login(
         client,

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import CurrencyCard from "../components/CurrencyCard.jsx";
-import { useAuth } from "../context/AuthContext.jsx";
+import { useAuth } from "../context/auth.js";
 
 async function fetchPairs() {
   const res = await fetch("/pairs");

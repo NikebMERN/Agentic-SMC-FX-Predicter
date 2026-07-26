@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client.js";
 import PageAlerts from "../components/PageAlerts.jsx";
 
-const LEVELS = ["ALL", "ERROR", "WARNING", "INFO"];
+const LEVELS = ["ALL", "CRITICAL", "ERROR", "WARNING", "INFO"];
+const SOURCES = ["ALL", "application", "api", "trading_engine", "prediction", "telegram", "worker", "scheduler", "ml_training", "database", "deployment"];
 
 function formatLogLine(line) {
   const trimmed = line.trim();
@@ -26,17 +27,27 @@ export default function LogsPage() {
   const [lines, setLines] = useState([]);
   const [auto, setAuto] = useState(false);
   const [level, setLevel] = useState("ALL");
+  const [source, setSource] = useState("ALL");
+  const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
     try {
-      const d = await api("/logs?lines=300");
+      const params = new URLSearchParams({ lines: "500" });
+      if (level !== "ALL") params.set("severity", level);
+      if (source !== "ALL") params.set("source", source);
+      if (search) params.set("search", search);
+      if (dateFrom) params.set("from", dateFrom);
+      if (dateTo) params.set("to", dateTo);
+      const d = await api(`/logs?${params}`);
       setLines(d.lines || []);
       setError("");
     } catch (e) {
       setError(e.message);
     }
-  }, []);
+  }, [level, source, search, dateFrom, dateTo]);
 
   useEffect(() => {
     load();
@@ -67,6 +78,12 @@ export default function LogsPage() {
             <option key={l} value={l}>{l === "ALL" ? "All levels" : l}</option>
           ))}
         </select>
+        <select value={source} onChange={(e) => setSource(e.target.value)} className="rounded border border-[#30363d] bg-[#0d1117] px-2 py-1 text-sm">
+          {SOURCES.map((item) => <option key={item} value={item}>{item === "ALL" ? "All systems" : item.replaceAll("_", " ")}</option>)}
+        </select>
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search logs" className="rounded border border-[#30363d] bg-[#0d1117] px-2 py-1 text-sm" />
+        <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="rounded border border-[#30363d] bg-[#0d1117] px-2 py-1 text-sm" />
+        <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="rounded border border-[#30363d] bg-[#0d1117] px-2 py-1 text-sm" />
         <span className="text-xs text-[#8b949e]">{filtered.length} lines</span>
       </div>
       <pre className="max-h-[70vh] overflow-auto rounded border border-[#30363d] bg-[#0d1117] p-3 text-xs whitespace-pre-wrap">

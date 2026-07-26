@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client.js";
-import { useAuth } from "../context/AuthContext.jsx";
+import { useAuth } from "../context/auth.js";
 import ApprovedRoute from "../components/ApprovedRoute.jsx";
 import MarketChart from "../components/MarketChart.jsx";
-import TradeEntryFeedback, { isTradeAction } from "../components/TradeEntryFeedback.jsx";
+import TradeEntryFeedback from "../components/TradeEntryFeedback.jsx";
+import { isTradeAction } from "../utils/tradeActions.js";
 
 const MODES = [
   { value: "mtf", label: "Multi-TF (auto by trading style)" },

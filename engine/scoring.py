@@ -17,6 +17,7 @@ from services.threshold_service import resolve_thresholds_model
 from utils import settings
 from utils.compliance import DISCLAIMER
 from utils.logger import get_logger
+from engine.institutional import active_entry_zone, execution_confirmation, latest_directional_event
 
 log = get_logger("engine.scoring")
 
@@ -157,21 +158,40 @@ def _narrative_gate(analysis: dict, direction: str) -> tuple[bool, list[str]]:
     if label in ("BULLISH",) and direction == "bearish":
         return False, ["HTF bullish — short setup invalid"]
 
-    has_sweep = any(s.get("bias") == direction for s in analysis.get("sweeps", []))
-    events = analysis["structure"]["events"]
-    has_shift = bool(events and events[-1]["direction"] == direction
-                     and events[-1]["kind"] in ("CHoCH", "MSS", "BOS"))
-    has_zone = bool(analysis.get("valid_order_blocks") or analysis.get("fvgs"))
+    confirmation = execution_confirmation(analysis, direction, max_bars=12)
+    has_sweep = confirmation["sweep"] is not None
+    has_shift = confirmation["event"] is not None and not any(
+        reason for reason in confirmation["reasons"] if "sweep" not in reason.lower()
+    )
+    has_zone = active_entry_zone(analysis, direction) is not None
 
     if not has_sweep:
         reasons.append("Missing liquidity sweep narrative")
     if not has_shift:
-        reasons.append("Missing structure shift (BOS/CHoCH/MSS)")
+        reasons.append("Missing recent displaced MSS/CHoCH after sweep")
     if not has_zone:
-        reasons.append("No FVG or order block for entry zone")
+        reasons.append("Price has not refined into an aligned FVG/OB/breaker")
 
-    ok = has_sweep and has_shift and (has_zone or htf_dir == direction)
+    ok = has_sweep and has_shift and has_zone
     return ok, reasons
+
+
+def _institutional_direction(analysis: dict, votes: list) -> tuple[str | None, list[str]]:
+    conflicts = []
+    htf_direction = (analysis.get("htf_bias") or {}).get("direction")
+    latest = latest_directional_event(analysis)
+    structure_direction = latest.get("direction") if latest else None
+    if htf_direction in ("bullish", "bearish"):
+        if structure_direction and structure_direction != htf_direction:
+            conflicts.append(f"Setup structure {structure_direction} conflicts with HTF {htf_direction}")
+        return htf_direction, conflicts
+    if structure_direction in ("bullish", "bearish"):
+        return structure_direction, conflicts
+    bullish = sum(weight for vote_direction, weight, *_ in votes if vote_direction == "bullish")
+    bearish = sum(weight for vote_direction, weight, *_ in votes if vote_direction == "bearish")
+    if max(bullish, bearish) == 0 or abs(bullish - bearish) < 1.0:
+        return None, ["No decisive institutional direction"]
+    return ("bullish" if bullish > bearish else "bearish"), conflicts
 
 
 def compute_decision(
@@ -195,12 +215,17 @@ def compute_decision(
     votes = _collect_votes(analysis, strategy_mode=mode)
     bull_score_v = sum(w for d, w, _, _ in votes if d == "bullish")
     bear_score_v = sum(w for d, w, _, _ in votes if d == "bearish")
-    direction = "bullish" if bull_score_v >= bear_score_v else "bearish"
+    direction, direction_conflicts = _institutional_direction(analysis, votes)
+    if direction is None:
+        direction = "bullish" if bull_score_v > bear_score_v else "bearish"
 
     components: dict[str, int] = {}
     reasoning: list[str] = []
     invalid_reasons: list[str] = []
     vetoes: list[str] = []
+    if direction_conflicts:
+        invalid_reasons.extend(direction_conflicts)
+        vetoes.extend(f"VETO: {reason}" for reason in direction_conflicts)
 
     for name, scorer in (
         ("htf_bias", lambda: _score_htf_bias(analysis, direction)),
@@ -285,8 +310,12 @@ def compute_decision(
     if rr is not None and rr < min_rr:
         vetoes.append(f"VETO: risk/reward {rr} below {min_rr}")
         invalid_reasons.append(f"Risk/reward {rr} below minimum {min_rr}")
+    if levels.get("stop_exceeds_cap"):
+        vetoes.append("VETO: structural invalidation exceeds maximum stop distance")
+        invalid_reasons.append("Protective structure is too far from entry")
 
-    execution_ok = analysis.get("execution_confirmed", False)
+    confirmation = execution_confirmation(analysis, direction, max_bars=8)
+    execution_ok = bool(analysis.get("execution_confirmed", False) or confirmation["confirmed"])
 
     # Decision bands
     if vetoes or total_score < min_wait:
@@ -301,9 +330,11 @@ def compute_decision(
             }
     elif total_score < min_bias or not narrative_ok:
         action = ACTION_WAIT
-    elif not execution_ok and analysis.get("trading_style") == "scalping":
+    elif not execution_ok:
         action = ACTION_WAIT
-        reasoning.append("Awaiting lower-TF entry confirmation (MSS/CHoCH)")
+        reasoning.append("Awaiting lower-TF confirmation: " + "; ".join(
+            confirmation["reasons"] or ["aligned MSS/CHoCH"]
+        ))
     else:
         action = ACTION_BUY if direction == "bullish" else ACTION_SELL
 
@@ -348,5 +379,6 @@ def compute_decision(
         "disclaimer": DISCLAIMER,
         "higher_timeframe_bias": analysis.get("higher_timeframe_bias"),
         "market_trend": _trend_label(analysis),
+        "institutional_confirmation": confirmation,
         **levels,
     }

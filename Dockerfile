@@ -27,8 +27,6 @@ COPY . .
 COPY --from=admin-build /build/static/admin /app/static/admin
 COPY --from=smc-build /build/static/app /app/static/app
 
-VOLUME ["/app/data", "/app/model", "/app/logs", "/app/backups"]
-
 EXPOSE 5000
 
-CMD ["python", "run.py", "api", "--with-background"]
+CMD ["gunicorn", "--config", "deploy/gunicorn.conf.py", "app:app"]

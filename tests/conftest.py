@@ -20,6 +20,7 @@ os.environ["ALPHA_VANTAGE_API_KEY"] = ""      # tests never fetch live data
 os.environ["OANDA_API_KEY"] = ""
 os.environ["TELEGRAM_BOT_TOKEN"] = ""
 os.environ["FETCH_COOLDOWN_MINUTES"] = "0"
+os.environ["RATELIMIT_STORAGE_URI"] = "memory://"
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 

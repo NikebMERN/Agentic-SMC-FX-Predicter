@@ -60,20 +60,35 @@ def _load_training_records() -> list[dict]:
     try:
         rows = (
             db.query(TrainingRecord)
-            .filter(TrainingRecord.admin_status == "APPROVED")
+            .filter(
+                TrainingRecord.admin_status == "APPROVED",
+                TrainingRecord.dataset_tier.in_(("APPROVED", "GOLD")),
+                TrainingRecord.suspicious.is_(False),
+                TrainingRecord.validation_score >= 0.75,
+            )
             .order_by(TrainingRecord.created_at.asc())
             .all()
         )
         records = []
         for row in rows:
+            review = row.prediction
+            if not review:
+                continue
             try:
                 feats = json.loads(row.features_json or "{}")
             except json.JSONDecodeError:
                 continue
-            label_raw = row.final_label or row.label
-            if label_raw in ("up", "correct", "1", 1):
+            label_raw = row.final_label
+            action = (review.predicted_action or "").upper()
+            if label_raw in ("win", "correct", "1", 1):
                 label = 1
-            elif label_raw in ("down", "wrong", "0", 0):
+            elif label_raw in ("loss", "wrong", "0", 0):
+                label = 0
+            elif label_raw == "up" and action in ("BUY", "BUY_BIAS"):
+                label = 1
+            elif label_raw == "down" and action in ("SELL", "SELL_BIAS"):
+                label = 1
+            elif label_raw in ("up", "down"):
                 label = 0
             else:
                 continue
@@ -85,13 +100,14 @@ def _load_training_records() -> list[dict]:
             if len(feature_dict) < 5:
                 continue
             records.append({
-                "symbol": row.symbol,
-                "interval": row.interval or "60min",
+                "symbol": review.symbol,
+                "interval": review.interval or "60min",
                 "trading_style": feats.get("trading_style", "intraday"),
                 "date": row.created_at or datetime.utcnow(),
                 "features": feature_dict,
                 "label": label,
                 "weight": calculate_sample_weight(row.created_at or datetime.utcnow()),
+                "risk_reward": float(review.risk_reward_planned or feats.get("risk_reward_planned") or 1.5),
             })
         return records
     finally:
@@ -125,6 +141,17 @@ def run_retrain(*, run_type: str = "NIGHTLY", pairs: list[str] | None = None) ->
 
     try:
         records = _load_training_records()
+        markets = {record["symbol"] for record in records}
+        strategies = {record["trading_style"] for record in records}
+        if len(records) < 100 or len(markets) < 2 or len(strategies) < 2:
+            reason = (
+                f"training diversity insufficient: samples={len(records)}, "
+                f"markets={len(markets)}, strategies={len(strategies)}"
+            )
+            _finalize_run(run_id, "SKIPPED", 0, 0, 0, [reason])
+            return {"run_id": run_id, "status": "SKIPPED", "reason": reason}
+        from services.dataset_service import create_dataset_version
+        dataset_version = create_dataset_version("APPROVED")
         groups = _group_records(records)
         target_pairs = pairs or list(settings.get_supported_pairs() or SUPPORTED_PAIRS)
 
@@ -138,7 +165,7 @@ def run_retrain(*, run_type: str = "NIGHTLY", pairs: list[str] | None = None) ->
 
                     pairs_processed += 1
                     try:
-                        result = _train_pair_group(key, group)
+                        result = _train_pair_group(key, group, dataset_version_id=dataset_version.id)
                         if result:
                             models_created += 1
                             if result.get("promoted"):
@@ -165,7 +192,12 @@ def run_retrain(*, run_type: str = "NIGHTLY", pairs: list[str] | None = None) ->
         release_lock()
 
 
-def _train_pair_group(key: tuple, group: list[dict]) -> dict | None:
+def _train_pair_group(
+    key: tuple,
+    group: list[dict],
+    *,
+    dataset_version_id: int | None = None,
+) -> dict | None:
     symbol, interval, style = key
     feature_cols = list(group[0]["features"].keys())
     df = pd.DataFrame([{**r["features"], "label": r["label"]} for r in group])
@@ -231,6 +263,21 @@ def _train_pair_group(key: tuple, group: list[dict]) -> dict | None:
             pass
 
     promo = evaluate_promotion(metrics, active_metrics)
+    from db.models import ShadowEvaluation
+    db = SessionLocal()
+    try:
+        db.add(ShadowEvaluation(
+            active_model_version_id=active.id if active else None,
+            candidate_model_version_id=version.id,
+            dataset_version_id=dataset_version_id,
+            active_metrics_json=json.dumps(active_metrics or {}),
+            candidate_metrics_json=json.dumps(metrics),
+            statistically_better=bool(promo["passed"]),
+            reasons_json=json.dumps(promo["reasons"]),
+        ))
+        db.commit()
+    finally:
+        db.close()
     promoted = False
     if promo["passed"]:
         promoted = promote_version(version.id)

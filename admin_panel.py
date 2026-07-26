@@ -20,6 +20,7 @@ import os
 import secrets
 import threading
 import time
+import re
 from datetime import datetime, timedelta, timezone
 
 import joblib
@@ -1300,6 +1301,76 @@ def review_training_record_route(admin_id, record_id):
     }})
 
 
+@admin_bp.route("/admin/api/training-records/<int:record_id>/governance", methods=["PATCH"])
+@admin_required
+def govern_training_record(admin_id, record_id):
+    data = request.get_json(silent=True) or {}
+    tier = (data.get("dataset_tier") or "").upper()
+    if tier and tier not in {"PENDING_REVIEW", "APPROVED", "REJECTED", "GOLD"}:
+        return jsonify({"error": "Invalid dataset_tier"}), 400
+    db = SessionLocal()
+    try:
+        row = db.query(TrainingRecord).filter(TrainingRecord.id == record_id).first()
+        if not row:
+            return jsonify({"error": "Training record not found"}), 404
+        if tier:
+            row.dataset_tier = tier
+        if "suspicious" in data:
+            row.suspicious = bool(data["suspicious"])
+        if "institutional_example" in data:
+            row.institutional_example = bool(data["institutional_example"])
+            if row.institutional_example and row.validation_score and row.validation_score >= 0.9:
+                row.dataset_tier = "GOLD"
+        if data.get("merge_into_id"):
+            target = db.query(TrainingRecord).filter(TrainingRecord.id == int(data["merge_into_id"])).first()
+            if not target or target.id == row.id:
+                return jsonify({"error": "Invalid merge target"}), 400
+            row.duplicate_of_id = target.id
+            row.dataset_tier = "REJECTED"
+            row.suspicious = True
+        if "final_label" in data:
+            row.final_label = str(data["final_label"]).lower()
+        if "admin_notes" in data:
+            row.admin_notes = data["admin_notes"]
+        row.reviewed_at = datetime.utcnow()
+        db.commit()
+        log_admin_action(admin_id, "govern_training_record", "training_record", record_id, data)
+        return jsonify({"record": _serialize(row)})
+    finally:
+        db.close()
+
+
+@admin_bp.route("/admin/api/datasets", methods=["GET", "POST"])
+@admin_required
+def dataset_versions_route(admin_id):
+    from db.models import DatasetVersion
+    if request.method == "POST":
+        from services.dataset_service import create_dataset_version
+        data = request.get_json(silent=True) or {}
+        version = create_dataset_version(
+            data.get("tier", "APPROVED"), created_by=admin_id,
+            parent_version_id=data.get("parent_version_id"),
+        )
+        log_admin_action(admin_id, "create_dataset_version", "dataset_version", version.id)
+        return jsonify({"version": _serialize(version)}), 201
+    db = SessionLocal()
+    try:
+        rows = db.query(DatasetVersion).order_by(DatasetVersion.id.desc()).limit(200).all()
+        return jsonify({"versions": [_serialize(row) for row in rows]})
+    finally:
+        db.close()
+
+
+@admin_bp.route("/admin/api/datasets/<int:version_id>/promote", methods=["POST"])
+@admin_required
+def promote_dataset_route(admin_id, version_id):
+    from services.dataset_service import promote_dataset
+    if not promote_dataset(version_id):
+        return jsonify({"error": "Dataset version not found"}), 404
+    log_admin_action(admin_id, "promote_dataset", "dataset_version", version_id)
+    return jsonify({"message": "Dataset promoted"})
+
+
 @admin_bp.route("/admin/api/training-records/export")
 @admin_required
 def export_training_records(admin_id):
@@ -1633,11 +1704,48 @@ def view_config(admin_id):
 @admin_required
 def tail_logs(admin_id):
     lines = min(int(request.args.get("lines", 200)), 1000)
+    severity = (request.args.get("severity") or "").upper()
+    source = (request.args.get("source") or "").lower()
+    search = (request.args.get("search") or "").lower()
+    date_from = request.args.get("from")
+    date_to = request.args.get("to")
     if not os.path.exists(LOG_FILE):
-        return jsonify({"lines": []})
+        return jsonify({"lines": [], "entries": []})
     with open(LOG_FILE, encoding="utf-8", errors="replace") as f:
         content = f.readlines()
-    return jsonify({"lines": [ln.rstrip("\n") for ln in content[-lines:]]})
+    entries = []
+    pattern = re.compile(r"^(?P<timestamp>[^|]+)\|\s*(?P<severity>\w+)\s*\|\s*(?P<logger>[^|]+)\|\s*(?P<message>.*)$")
+    source_map = {
+        "engine": "trading_engine", "pipeline": "prediction", "bot": "telegram",
+        "telegram": "telegram", "worker": "worker", "scheduler": "scheduler",
+        "ml": "ml_training", "database": "database", "sqlalchemy": "database",
+        "deploy": "deployment", "app": "application", "api": "api",
+    }
+    for raw in content[-max(lines * 5, lines):]:
+        line = raw.rstrip("\n")
+        match = pattern.match(line)
+        if match:
+            entry = match.groupdict()
+            logger_name = entry["logger"].strip().lower()
+            entry["source"] = next((v for k, v in source_map.items() if k in logger_name), "application")
+            entry = {k: v.strip() if isinstance(v, str) else v for k, v in entry.items()}
+        else:
+            entry = {"timestamp": "", "severity": "INFO", "logger": "", "message": line, "source": "application"}
+        if severity and entry["severity"] != severity:
+            continue
+        if source and entry["source"] != source:
+            continue
+        if search and search not in line.lower():
+            continue
+        stamp = entry["timestamp"]
+        if date_from and stamp and stamp[:10] < date_from:
+            continue
+        if date_to and stamp and stamp[:10] > date_to:
+            continue
+        entry["raw"] = line
+        entries.append(entry)
+    entries = entries[-lines:]
+    return jsonify({"lines": [entry["raw"] for entry in entries], "entries": entries})
 
 
 @admin_bp.route("/admin/api/notifications")
@@ -1718,8 +1826,19 @@ def ml_backtests(admin_id):
     db = SessionLocal()
     try:
         rows = db.query(BacktestRun).order_by(BacktestRun.id.desc()).limit(50).all()
-        return jsonify({"backtests": [
-            {
+        versions = {
+            row.id: row for row in db.query(ModelVersion).filter(
+                ModelVersion.id.in_([item.model_version_id for item in rows])
+            ).all()
+        } if rows else {}
+        output = []
+        for r in rows:
+            version = versions.get(r.model_version_id)
+            try:
+                metrics = json.loads(version.metrics_json or "{}") if version else {}
+            except json.JSONDecodeError:
+                metrics = {}
+            output.append({
                 "id": r.id,
                 "model_version_id": r.model_version_id,
                 "symbol": r.symbol,
@@ -1728,11 +1847,16 @@ def ml_backtests(admin_id):
                 "precision": r.precision,
                 "f1": r.f1,
                 "brier_score": r.brier_score,
+                "profit_factor": metrics.get("profit_factor"),
+                "expectancy": metrics.get("expectancy"),
+                "sharpe_ratio": metrics.get("sharpe_ratio"),
+                "max_drawdown": metrics.get("max_drawdown"),
+                "confusion_matrix": metrics.get("confusion_matrix"),
+                "feature_importance": metrics.get("feature_importance", []),
                 "passed_promotion_gate": r.passed_promotion_gate,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
-            }
-            for r in rows
-        ]})
+            })
+        return jsonify({"backtests": output})
     finally:
         db.close()
 
@@ -1760,3 +1884,190 @@ def performance_timeframes(admin_id):
 def ml_admin_exports(admin_id):
     from services.export_service import list_export_jobs
     return jsonify({"jobs": list_export_jobs(user_id=None, limit=50)})
+
+
+@admin_bp.route("/admin/api/system/health")
+@admin_required
+def system_health(admin_id):
+    from db.models import ConfirmationWatch, ExportJob, NotificationDelivery, TrainingRun
+    from engine.data import provider_health
+    from services.runtime_monitor import redis_health, record_heartbeat, service_heartbeats, system_resources
+
+    record_heartbeat("api")
+    db = SessionLocal()
+    started = time.perf_counter()
+    try:
+        db.execute(__import__("sqlalchemy").text("SELECT 1"))
+        database = {
+            "healthy": True,
+            "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+        }
+        queue = {
+            status: db.query(NotificationDelivery).filter(NotificationDelivery.status == status).count()
+            for status in ("pending", "processing", "retry", "delivered", "skipped", "failed")
+        }
+        jobs = {
+            "training_running": db.query(TrainingRun).filter(TrainingRun.status == "RUNNING").count(),
+            "exports_queued": db.query(ExportJob).filter(ExportJob.status.in_(("QUEUED", "RUNNING"))).count(),
+            "confirmations_watching": db.query(ConfirmationWatch).filter(
+                ConfirmationWatch.status == "watching"
+            ).count(),
+        }
+    except Exception as exc:
+        database = {"healthy": False, "detail": str(exc)[:200]}
+        queue, jobs = {}, {}
+    finally:
+        db.close()
+    return jsonify({
+        "database": database,
+        "redis": redis_health(),
+        "resources": system_resources(),
+        "notification_queue": queue,
+        "queue_size": sum(queue.get(key, 0) for key in ("pending", "processing", "retry")),
+        "services": service_heartbeats(),
+        "providers": provider_health(),
+        "jobs": jobs,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+@admin_bp.route("/admin/api/system/restart", methods=["POST"])
+@admin_required
+def system_restart(admin_id):
+    data = request.get_json(silent=True) or {}
+    service = str(data.get("service", "")).strip().lower()
+    if service not in {"api", "ai-worker", "scheduler", "all"}:
+        return jsonify({"error": "service must be api, ai-worker, scheduler, or all"}), 400
+    confirmation = str(data.get("confirmation", "")).strip()
+    if confirmation != f"RESTART {service}":
+        return jsonify({"error": f"confirmation must equal RESTART {service}"}), 400
+    from services.runtime_monitor import request_restart
+    result = request_restart(service, admin_id)
+    log_admin_action(admin_id, "system_restart_requested", "service", service, result)
+    status_code = result.pop("status")
+    return jsonify(result), status_code
+
+
+@admin_bp.route("/admin/api/jobs")
+@admin_required
+def monitor_jobs(admin_id):
+    from db.models import ExportJob, NotificationDelivery, TrainingRun
+    db = SessionLocal()
+    try:
+        training = db.query(TrainingRun).order_by(TrainingRun.id.desc()).limit(50).all()
+        exports = db.query(ExportJob).order_by(ExportJob.id.desc()).limit(50).all()
+        deliveries = db.query(NotificationDelivery).filter(
+            NotificationDelivery.status.in_(("pending", "processing", "retry", "failed"))
+        ).order_by(NotificationDelivery.id.desc()).limit(100).all()
+        return jsonify({
+            "training": [_serialize(row) for row in training],
+            "exports": [_serialize(row) for row in exports],
+            "deliveries": [_serialize(row) for row in deliveries],
+        })
+    finally:
+        db.close()
+
+
+@admin_bp.route("/admin/api/ml/monitoring")
+@admin_required
+def ml_monitoring(admin_id):
+    from db.models import DatasetVersion, ShadowEvaluation, TrainingRun
+    db = SessionLocal()
+    try:
+        tier_counts = {
+            tier: db.query(TrainingRecord).filter(TrainingRecord.dataset_tier == tier).count()
+            for tier in ("PENDING_REVIEW", "APPROVED", "REJECTED", "GOLD")
+        }
+        datasets = db.query(DatasetVersion).order_by(DatasetVersion.id.desc()).limit(30).all()
+        models = db.query(ModelVersion).order_by(ModelVersion.id.desc()).limit(50).all()
+        promotions = db.query(ShadowEvaluation).order_by(ShadowEvaluation.id.desc()).limit(50).all()
+        runs = db.query(TrainingRun).order_by(TrainingRun.id.desc()).limit(30).all()
+        model_rows = []
+        for model in models:
+            try:
+                metrics = json.loads(model.metrics_json or "{}")
+            except json.JSONDecodeError:
+                metrics = {}
+            row = _serialize(model)
+            row["metrics"] = metrics
+            row["feature_importance"] = metrics.get("feature_importance", [])
+            row["confusion_matrix"] = metrics.get("confusion_matrix")
+            model_rows.append(row)
+        return jsonify({
+            "dataset_size": sum(tier_counts.values()),
+            "feedback_total": db.query(UserFeedback).count(),
+            "tiers": tier_counts,
+            "datasets": [_serialize(row) for row in datasets],
+            "models": model_rows,
+            "training_history": [_serialize(row) for row in runs],
+            "promotion_history": [{
+                **_serialize(row),
+                "active_metrics": json.loads(row.active_metrics_json or "{}"),
+                "candidate_metrics": json.loads(row.candidate_metrics_json or "{}"),
+                "reasons": json.loads(row.reasons_json or "[]"),
+            } for row in promotions],
+        })
+    finally:
+        db.close()
+
+
+def _performance_group(rows, key_fn):
+    grouped = {}
+    for review, outcome in rows:
+        key = key_fn(review)
+        item = grouped.setdefault(key, {"signals": 0, "wins": 0, "losses": 0, "returns": []})
+        item["signals"] += 1
+        if outcome and outcome.meta_label is not None:
+            if outcome.meta_label == 1:
+                item["wins"] += 1
+                item["returns"].append(float(review.risk_reward_achieved or review.risk_reward_planned or 1.0))
+            else:
+                item["losses"] += 1
+                item["returns"].append(-1.0)
+    output = []
+    for key, item in grouped.items():
+        returns = item.pop("returns")
+        gross_profit = sum(value for value in returns if value > 0)
+        gross_loss = abs(sum(value for value in returns if value < 0))
+        equity = 0.0
+        peak = 0.0
+        max_drawdown = 0.0
+        for value in returns:
+            equity += value
+            peak = max(peak, equity)
+            max_drawdown = max(max_drawdown, peak - equity)
+        if len(returns) > 1:
+            mean_return = sum(returns) / len(returns)
+            variance = sum((value - mean_return) ** 2 for value in returns) / (len(returns) - 1)
+            sharpe = mean_return / (variance ** 0.5) * (len(returns) ** 0.5) if variance > 0 else 0.0
+        else:
+            sharpe = 0.0
+        item.update({
+            "name": key,
+            "win_rate": item["wins"] / (item["wins"] + item["losses"]) if item["wins"] + item["losses"] else None,
+            "profit_factor": gross_profit / gross_loss if gross_loss else (999.0 if gross_profit else 0.0),
+            "expectancy": sum(returns) / len(returns) if returns else None,
+            "sharpe_ratio": sharpe,
+            "max_drawdown": max_drawdown,
+        })
+        output.append(item)
+    return sorted(output, key=lambda item: item["signals"], reverse=True)
+
+
+@admin_bp.route("/admin/api/performance/overview")
+@admin_required
+def performance_overview(admin_id):
+    from db.models import SignalOutcome
+    db = SessionLocal()
+    try:
+        rows = db.query(PredictionReview, SignalOutcome).outerjoin(
+            SignalOutcome, SignalOutcome.prediction_id == PredictionReview.id
+        ).all()
+        return jsonify({
+            "market": _performance_group(rows, lambda _review: "All markets"),
+            "pairs": _performance_group(rows, lambda review: review.symbol),
+            "strategies": _performance_group(rows, lambda review: review.strategy_mode or "both"),
+            "timeframes": _performance_group(rows, lambda review: review.interval or "60min"),
+        })
+    finally:
+        db.close()

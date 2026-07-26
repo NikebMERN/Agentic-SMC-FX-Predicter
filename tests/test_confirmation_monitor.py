@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from db.models import ConfirmationWatch, User
+from db.models import ConfirmationWatch, NotificationDelivery, User
 from db.session import SessionLocal
 from services.confirmation_monitor import (
     extract_wait_reason,
@@ -118,7 +118,10 @@ def test_scan_notifies_when_setup_confirms(approved_user):
     finally:
         db.close()
 
-    with patch("services.confirmation_monitor._run_predict", return_value=_buy_result()):
+    with (
+        patch("services.confirmation_monitor._run_predict", return_value=_buy_result()),
+        patch("services.notification_queue.notify_user", return_value=True),
+    ):
         scan_watches(force=True)
 
     db = SessionLocal()
@@ -136,6 +139,69 @@ def test_scan_notifies_when_setup_confirms(approved_user):
         for n in notes
     )
 
+
+def test_confirmation_and_outbox_are_atomic(approved_user):
+    result = _wait_result("GBPUSD")
+    review = record_prediction_from_result(user_id=approved_user["id"], result=result, source="web")
+    db = SessionLocal()
+    try:
+        watch = db.query(ConfirmationWatch).filter(
+            ConfirmationWatch.source_review_id == review.id
+        ).first()
+        watch_id = watch.id
+    finally:
+        db.close()
+
+    with (
+        patch("services.confirmation_monitor._run_predict", return_value=_buy_result("GBPUSD")),
+        patch(
+            "services.notification_queue.enqueue_event_in_session",
+            side_effect=RuntimeError("outbox unavailable"),
+        ),
+    ):
+        scan_watches(force=True)
+
+    db = SessionLocal()
+    try:
+        watch = db.query(ConfirmationWatch).filter(ConfirmationWatch.id == watch_id).one()
+        assert watch.status == "watching"
+        assert watch.confirmed_action is None
+    finally:
+        db.close()
+
+
+def test_stale_processing_delivery_is_recovered(approved_user):
+    db = SessionLocal()
+    try:
+        delivery = NotificationDelivery(
+            event_key="test:stale",
+            user_id=approved_user["id"],
+            channel="telegram",
+            payload_json="{}",
+            status="processing",
+            attempts=1,
+            updated_at=datetime.utcnow() - timedelta(minutes=10),
+        )
+        db.add(delivery)
+        db.commit()
+        delivery_id = delivery.id
+    finally:
+        db.close()
+
+    with patch("services.notification_queue._deliver", return_value=(True, None)):
+        from services.notification_queue import process_pending
+        result = process_pending()
+    assert result["delivered"] >= 1
+
+    db = SessionLocal()
+    try:
+        delivery = db.query(NotificationDelivery).filter(
+            NotificationDelivery.id == delivery_id
+        ).one()
+        assert delivery.status == "delivered"
+        assert delivery.attempts == 2
+    finally:
+        db.close()
 
 def test_get_confirmation_api(client, approved_user):
     result = _wait_result()

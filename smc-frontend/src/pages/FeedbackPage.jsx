@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
-import { useAuth } from "../context/AuthContext.jsx";
-import OutcomeFeedback, { outcomeLabel } from "../components/OutcomeFeedback.jsx";
-import { tradeEntryLabel } from "../components/TradeEntryFeedback.jsx";
+import { useAuth } from "../context/auth.js";
+import OutcomeFeedback from "../components/OutcomeFeedback.jsx";
+import { outcomeLabel, tradeEntryLabel } from "../utils/feedbackLabels.js";
 import { isTradeAction } from "../utils/tradeActions.js";
 
 const FILTER_OPTIONS = [
@@ -50,16 +50,16 @@ export default function FeedbackPage() {
   const [filter, setFilter] = useState("needs_outcome");
   const [actionFilter, setActionFilter] = useState("all");
 
-  async function load() {
+  const load = useCallback(async () => {
     const [user, rev] = await Promise.all([api("/me"), api("/my/reviews?limit=50")]);
     setMe(user);
     setProfile(user);
     setReviews(rev.reviews || []);
-  }
+  }, [setProfile]);
 
   useEffect(() => {
     load().catch((err) => setError(err.message));
-  }, [setProfile]);
+  }, [load]);
 
   const filteredReviews = useMemo(
     () => reviews.filter((r) => matchesFilter(r, filter, actionFilter)),

@@ -20,7 +20,9 @@ import glob
 import os
 import sys
 import time
+import threading
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -43,6 +45,10 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 BASE_URL = "https://www.alphavantage.co/query"
 REQUEST_TIMEOUT = 30
+PROVIDER_RETRIES = int(os.getenv("DATA_PROVIDER_RETRIES", "3"))
+_diagnostics = threading.local()
+_provider_health: dict[str, dict] = {}
+_health_lock = threading.Lock()
 
 OANDA_HOSTS = {
     "practice": "https://api-fxpractice.oanda.com",
@@ -89,6 +95,88 @@ COLUMN_MAP = {
 
 class DataUnavailableError(Exception):
     """Raised when neither the provider nor the local cache has data."""
+
+
+def get_last_data_diagnostics() -> dict:
+    return getattr(_diagnostics, "value", {}).copy()
+
+
+def provider_health() -> dict:
+    with _health_lock:
+        return {name: state.copy() for name, state in _provider_health.items()}
+
+
+def _record_provider(provider: str, ok: bool, detail: str) -> None:
+    with _health_lock:
+        state = _provider_health.setdefault(
+            provider, {"successes": 0, "failures": 0, "consecutive_failures": 0}
+        )
+        state["successes" if ok else "failures"] += 1
+        state["consecutive_failures"] = 0 if ok else state["consecutive_failures"] + 1
+        state["healthy"] = ok
+        state["last_detail"] = detail
+        state["last_checked_at"] = pd.Timestamp.utcnow().isoformat()
+
+
+def _validate_provider_frame(df: pd.DataFrame, interval: str) -> list[str]:
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    if df.empty or not required.issubset(df.columns):
+        raise LookupError("provider returned an empty or malformed candle set")
+    if df.index.has_duplicates:
+        raise LookupError("provider returned duplicate candle timestamps")
+    if not df.index.is_monotonic_increasing:
+        raise LookupError("provider returned unsorted candles")
+    if not isinstance(df.index, pd.DatetimeIndex) or df.index.isna().any():
+        raise LookupError("provider returned invalid candle timestamps")
+    numeric = df[["Open", "High", "Low", "Close"]]
+    values = numeric.to_numpy(dtype=float)
+    if not np.isfinite(values).all() or (values <= 0).any():
+        raise LookupError("provider returned missing or non-positive OHLC prices")
+    if (df["High"] < df[["Open", "Close", "Low"]].max(axis=1)).any():
+        raise LookupError("provider returned invalid candle highs")
+    if (df["Low"] > df[["Open", "Close", "High"]].min(axis=1)).any():
+        raise LookupError("provider returned invalid candle lows")
+    minutes = {"1min": 1, "5min": 5, "15min": 15, "30min": 30, "60min": 60, "240min": 240}
+    warnings = []
+    expected = minutes.get(interval)
+    if expected and len(df) > 2:
+        gaps = df.index.to_series().diff().dt.total_seconds().div(60)
+        missing = int((gaps > expected * 3).sum())
+        if missing:
+            warnings.append(f"{missing} significant candle gap(s) detected")
+    returns = df["Close"].pct_change().abs().dropna()
+    if len(returns) >= 20:
+        median = float(returns.median())
+        mad = float((returns - median).abs().median())
+        threshold = max(0.05, median + 12 * max(mad, 1e-9))
+        abnormal = int((returns > threshold).sum())
+        if abnormal:
+            warnings.append(f"{abnormal} abnormal price movement(s) detected")
+    return warnings
+
+
+RESAMPLE_FALLBACKS = {
+    "15min": (("5min", "15min"), ("1min", "15min")),
+    "30min": (("15min", "30min"), ("5min", "30min")),
+    "60min": (("30min", "60min"), ("15min", "60min")),
+    "240min": (("60min", "240min"),),
+    "daily": (("240min", "1D"), ("60min", "1D")),
+    "day": (("240min", "1D"), ("60min", "1D")),
+}
+
+
+def _resample_cached(symbol: str, interval: str) -> tuple[pd.DataFrame, str] | None:
+    for source_interval, rule in RESAMPLE_FALLBACKS.get(interval, ()):
+        source = load_cached(symbol, source_interval)
+        if source is None or source.empty:
+            continue
+        frame = source.resample(rule).agg({
+            "Open": "first", "High": "max", "Low": "min",
+            "Close": "last", "Volume": "sum",
+        }).dropna(subset=["Open", "High", "Low", "Close"])
+        if len(frame) >= 20:
+            return frame, source_interval
+    return None
 
 
 def csv_path(symbol: str, interval: str = INTERVAL) -> str:
@@ -240,11 +328,6 @@ def load_cached(symbol: str, interval: str = INTERVAL) -> pd.DataFrame | None:
         csv_path(symbol, interval),
         os.path.join(DATA_DIR, "1H_DATA_MAJOR_CURRENCIES", f"{symbol}_{interval}.csv"),
     ]
-    candidates += sorted(
-        glob.glob(os.path.join(DATA_DIR, f"{symbol}_*.csv")),
-        key=os.path.getmtime,
-        reverse=True,
-    )
     for path in candidates:
         if os.path.exists(path):
             try:
@@ -299,7 +382,10 @@ def get_data(symbol: str, interval: str = INTERVAL, fetch: bool = True) -> tuple
     takes the product down.
     """
     symbol = normalize_symbol(symbol)
+    interval = validate_interval(interval)
     os.makedirs(DATA_DIR, exist_ok=True)
+    diagnostics = {"symbol": symbol, "interval": interval, "attempts": [], "fallback_used": False}
+    _diagnostics.value = diagnostics
 
     # Cooldown: a CSV refreshed moments ago is as good as live and the
     # provider quota (free tier: ~25 requests/day) is precious.
@@ -322,32 +408,55 @@ def get_data(symbol: str, interval: str = INTERVAL, fetch: bool = True) -> tuple
                 "ALPHA_VANTAGE_API_KEY) — using cached data for %s", symbol,
             )
         for provider, fetcher in chain:
-            try:
-                df = fetcher(symbol, interval)
-                if len(df) < 50:
-                    raise LookupError(f"provider returned only {len(df)} candles")
-                df.to_csv(csv_path(symbol, interval))
-                log.info(
-                    "Fetched %d candles for %s @ %s via %s",
-                    len(df), symbol, interval, provider,
-                )
-                return df, provider
-            except Exception as exc:
-                log.warning("%s (%s) failed for %s: %s", provider, fetcher.__name__, symbol, exc)
+            for attempt in range(1, PROVIDER_RETRIES + 1):
                 try:
-                    from services.health_monitor import record_failure
-                    record_failure("fetch", f"{symbol}: {exc}")
-                except Exception:
-                    pass
+                    df = fetcher(symbol, interval)
+                    if len(df) < 50:
+                        raise LookupError(f"provider returned only {len(df)} candles")
+                    warnings = _validate_provider_frame(df, interval)
+                    df.to_csv(csv_path(symbol, interval))
+                    detail = f"{len(df)} candles" + (f"; {'; '.join(warnings)}" if warnings else "")
+                    diagnostics["attempts"].append({"provider": provider, "ok": True, "detail": detail})
+                    diagnostics["provider"] = provider
+                    diagnostics["warnings"] = warnings
+                    _record_provider(provider, True, detail)
+                    log.info("Fetched %d candles for %s @ %s via %s", len(df), symbol, interval, provider)
+                    return df, provider
+                except Exception as exc:
+                    detail = f"{fetcher.__name__} attempt {attempt}/{PROVIDER_RETRIES}: {exc}"
+                    diagnostics["attempts"].append({"provider": provider, "ok": False, "detail": detail})
+                    _record_provider(provider, False, detail)
+                    log.warning("%s failed for %s: %s", provider, symbol, detail)
+                    if attempt < PROVIDER_RETRIES:
+                        time.sleep(0.25 * (2 ** (attempt - 1)))
 
     cached = load_cached(symbol, interval)
     if cached is not None:
+        warnings = _validate_provider_frame(cached, interval)
+        diagnostics.update({"provider": "cache", "fallback_used": bool(fetch), "warnings": warnings})
         try:
             from services.health_monitor import record_success
             record_success("fetch")
         except Exception:
             pass
         return cached, "cache"
+
+    resampled = _resample_cached(symbol, interval)
+    if resampled is not None:
+        cached, source_interval = resampled
+        warnings = _validate_provider_frame(cached, interval)
+        diagnostics.update({
+            "provider": "resampled_cache",
+            "fallback_used": True,
+            "fallback_from": source_interval,
+            "warnings": warnings,
+        })
+        diagnostics["attempts"].append({
+            "provider": "resampled_cache",
+            "ok": True,
+            "detail": f"{len(cached)} candles resampled from {source_interval}",
+        })
+        return cached, "resampled_cache"
 
     try:
         from services.health_monitor import record_failure
@@ -357,6 +466,7 @@ def get_data(symbol: str, interval: str = INTERVAL, fetch: bool = True) -> tuple
 
     raise DataUnavailableError(
         f"No live data and no cached CSV for {symbol} @ {interval}. "
+        f"Provider attempts: {diagnostics['attempts']}. "
         f"Set OANDA_API_KEY (preferred) or ALPHA_VANTAGE_API_KEY, "
         f"or place a CSV at {csv_path(symbol, interval)}."
     )

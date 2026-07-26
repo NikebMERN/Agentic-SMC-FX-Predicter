@@ -372,6 +372,13 @@ class PredictionReview(Base):
     meta_ml_probability = Column(Float, nullable=True)
     confidence_before_ml = Column(Float, nullable=True)
     final_confidence = Column(Float, nullable=True)
+    risk_reward_planned = Column(Float, nullable=True)
+    risk_reward_achieved = Column(Float, nullable=True)
+    account_type = Column(String(32), nullable=True)
+    volatility = Column(Float, nullable=True)
+    spread = Column(Float, nullable=True)
+    execution_delay_ms = Column(Integer, nullable=True)
+    manual_notes = Column(Text, nullable=True)
     trading_style = Column(String(16), default='intraday')
     strategy_mode = Column(String(16), default='both')
     retry_count = Column(Integer, default=0, nullable=False)
@@ -424,6 +431,11 @@ class UserFeedback(Base):
     trade_entry = Column(String(16), nullable=True)
     feedback = Column(String(16), nullable=True)
     comment = Column(Text, nullable=True)
+    screenshot_path = Column(String(512), nullable=True)
+    account_type = Column(String(32), nullable=True)
+    execution_delay_ms = Column(Integer, nullable=True)
+    manual_notes = Column(Text, nullable=True)
+    payload_hash = Column(String(64), nullable=True, index=True)
     submitted_at = Column(DateTime, default=datetime.utcnow)
 
     prediction = relationship("PredictionReview", back_populates="user_feedback")
@@ -463,9 +475,54 @@ class TrainingRecord(Base):
     admin_status = Column(String(24), default='PENDING_REVIEW', nullable=False, index=True)
     admin_notes = Column(Text, nullable=True)
     reviewed_at = Column(DateTime, nullable=True)
+    dataset_tier = Column(String(24), default='PENDING_REVIEW', nullable=False, index=True)
+    validation_score = Column(Float, nullable=True)
+    validation_reasons_json = Column(Text, nullable=True)
+    duplicate_of_id = Column(Integer, ForeignKey('training_records.id', ondelete='SET NULL'), nullable=True)
+    suspicious = Column(Boolean, default=False, nullable=False, index=True)
+    institutional_example = Column(Boolean, default=False, nullable=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     prediction = relationship("PredictionReview", back_populates="training_record")
+
+
+class DatasetVersion(Base):
+    __tablename__ = 'dataset_versions'
+    id = Column(Integer, primary_key=True)
+    version_tag = Column(String(64), unique=True, nullable=False, index=True)
+    tier = Column(String(24), nullable=False, index=True)
+    parent_version_id = Column(Integer, ForeignKey('dataset_versions.id', ondelete='SET NULL'), nullable=True)
+    manifest_json = Column(Text, nullable=False)
+    record_count = Column(Integer, default=0, nullable=False)
+    content_hash = Column(String(64), nullable=False, index=True)
+    status = Column(String(16), default='CREATED', nullable=False, index=True)
+    created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    promoted_at = Column(DateTime, nullable=True)
+
+
+class DatasetVersionRecord(Base):
+    __tablename__ = 'dataset_version_records'
+    id = Column(Integer, primary_key=True)
+    dataset_version_id = Column(Integer, ForeignKey('dataset_versions.id', ondelete='CASCADE'), nullable=False, index=True)
+    training_record_id = Column(Integer, ForeignKey('training_records.id', ondelete='RESTRICT'), nullable=False, index=True)
+    record_hash = Column(String(64), nullable=False)
+    __table_args__ = (
+        UniqueConstraint('dataset_version_id', 'training_record_id', name='uq_dataset_version_record'),
+    )
+
+
+class ShadowEvaluation(Base):
+    __tablename__ = 'shadow_evaluations'
+    id = Column(Integer, primary_key=True)
+    active_model_version_id = Column(Integer, ForeignKey('model_versions.id', ondelete='SET NULL'), nullable=True)
+    candidate_model_version_id = Column(Integer, ForeignKey('model_versions.id', ondelete='CASCADE'), nullable=False, index=True)
+    dataset_version_id = Column(Integer, ForeignKey('dataset_versions.id', ondelete='SET NULL'), nullable=True)
+    active_metrics_json = Column(Text, nullable=False)
+    candidate_metrics_json = Column(Text, nullable=False)
+    statistically_better = Column(Boolean, default=False, nullable=False)
+    reasons_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
 class Notification(Base):
@@ -482,6 +539,28 @@ class Notification(Base):
 
     __table_args__ = (
         Index('ix_notifications_user_read_created', 'user_id', 'read', 'created_at'),
+    )
+
+
+class NotificationDelivery(Base):
+    """Durable per-channel delivery record (transactional outbox)."""
+    __tablename__ = 'notification_deliveries'
+    id = Column(Integer, primary_key=True)
+    event_key = Column(String(128), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    channel = Column(String(16), nullable=False, index=True)
+    payload_json = Column(Text, nullable=False)
+    status = Column(String(16), default='pending', nullable=False, index=True)
+    attempts = Column(Integer, default=0, nullable=False)
+    last_error = Column(Text, nullable=True)
+    next_attempt_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    delivered_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index('ux_notification_delivery_event_channel', 'event_key', 'channel', unique=True),
+        Index('ix_notification_delivery_pending', 'status', 'next_attempt_at'),
     )
 
 
