@@ -5,10 +5,11 @@ services:
     plan: standard
     numInstances: 2
     dockerfilePath: ./Dockerfile
+    preDeployCommand: python run.py migrate
     dockerCommand: gunicorn --config deploy/gunicorn.conf.py app:app
     healthCheckPath: /readyz
     maxShutdownDelaySeconds: 60
-    autoDeploy: true
+    autoDeployTrigger: checksPass
     envVars:
       - key: APP_ENV
         value: production
@@ -52,7 +53,7 @@ services:
     dockerfilePath: ./Dockerfile
     dockerCommand: python run.py ai-worker
     maxShutdownDelaySeconds: 120
-    autoDeploy: true
+    autoDeployTrigger: checksPass
     envVars:
       - key: APP_ENV
         value: production
@@ -60,6 +61,8 @@ services:
         value: ai-worker
       - key: BACKGROUND_SERVICES_ENABLED
         value: "true"
+      - key: TELEGRAM_BOT_ENABLED
+        value: "false"
       - key: LOG_FORMAT
         value: json
       - key: LOG_TO_FILE
@@ -83,13 +86,46 @@ services:
           property: connectionString
 
   - type: worker
+    name: smartflow-telegram
+    runtime: docker
+    plan: standard
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python run.py telegram-worker
+    maxShutdownDelaySeconds: 60
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SERVICE_ROLE
+        value: telegram
+      - key: LOG_FORMAT
+        value: json
+      - key: LOG_TO_FILE
+        value: "false"
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_ENABLED
+        value: "true"
+      - key: SENTRY_DSN
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: smartflow-cache
+          property: connectionString
+
+  - type: worker
     name: smartflow-scheduler
     runtime: docker
     plan: standard
     dockerfilePath: ./Dockerfile
     dockerCommand: python run.py scheduler
     maxShutdownDelaySeconds: 120
-    autoDeploy: true
+    autoDeployTrigger: checksPass
     envVars:
       - key: APP_ENV
         value: production

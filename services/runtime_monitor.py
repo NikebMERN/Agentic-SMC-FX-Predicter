@@ -58,7 +58,7 @@ def redis_health() -> dict:
         return {"configured": True, "healthy": False, "detail": str(exc)[:200]}
 
 
-def service_heartbeats(services=("api", "ai-worker", "scheduler")) -> list[dict]:
+def service_heartbeats(services=("api", "ai-worker", "scheduler", "telegram")) -> list[dict]:
     client = _redis()
     now = time.time()
     rows = []

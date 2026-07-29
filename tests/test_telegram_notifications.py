@@ -1,4 +1,5 @@
 from unittest.mock import Mock
+import asyncio
 
 import pytest
 
@@ -79,3 +80,28 @@ def test_signal_message_contains_complete_operational_fields():
         "Confluence Score:", "Confirmation reason:",
     ):
         assert label in message
+
+
+def test_telegram_bootstrap_initializes_before_api_calls(monkeypatch):
+    import bot
+
+    calls = []
+
+    class FakeBot:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def initialize(self):
+            calls.append("initialize")
+
+        async def delete_webhook(self, **_kwargs):
+            calls.append("delete_webhook")
+            return True
+
+        async def shutdown(self):
+            calls.append("shutdown")
+
+    monkeypatch.setattr(bot, "Bot", FakeBot)
+    monkeypatch.setattr(bot, "build_httpx_request", lambda: object())
+    asyncio.run(bot._bootstrap_polling())
+    assert calls == ["initialize", "delete_webhook", "shutdown"]

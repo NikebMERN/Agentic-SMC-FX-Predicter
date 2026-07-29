@@ -2,25 +2,28 @@
 
 ## Status: NOT READY
 
-Validation date: 2026-07-26.
+Validation date: 2026-07-27.
 
 ## Passed
 
-- Full Python suite: **210 passed**.
+- Full Python suite: **215 passed** after the database bootstrap, reported-route,
+  model naming, Telegram lifecycle, monitoring and deployment changes.
 - Trading engine, historical scenarios, ML gates, feedback governance,
   database/API, Telegram, confirmations, notifications, admin and deployment
   tests passed.
-- Admin production build passed.
-- User frontend lint and production build passed.
+- Admin and user production builds passed.
 - Render services are separated into redundant API, AI worker, singleton
-  scheduler and managed Redis.
+  scheduler, dedicated Telegram worker and managed Redis.
 - Health/readiness, JSON logs, Sentry hook, request IDs, heartbeats, graceful
   shutdown and database pooling are implemented.
 - Patched Flask, Requests, Waitress, python-dotenv, PyJWT, Werkzeug and
   LightGBM to the advisory-recommended versions.
-- After dependency upgrades, **42 production-critical tests passed** across
-  historical trading scenarios, ML feedback governance, confirmations,
-  Telegram, admin monitoring, deployment and API health.
+- The reported History, My Feedback, ML Operations, Models & Data and Training
+  Records routes have regression coverage and pass without internal errors.
+- Fresh database bootstrap uses `python run.py migrate` in CI and Render's
+  pre-deploy phase.
+- GitHub checks now build both frontends and the production Docker image;
+  Render deploys only after those checks pass.
 - Route-level lazy loading reduced the user entry bundle from approximately
   **799 KB to 236 KB** and the admin entry bundle from approximately
   **355 KB to 243 KB**. Both production builds and user lint pass.
@@ -32,10 +35,9 @@ Validation date: 2026-07-26.
    across available published 7.x releases, while the suggested `8.3.0`
    package is not available from npm. Resolve with a vendor-confirmed patched
    release, then rebuild and retest navigation/auth flows.
-2. The complete 210-test suite passed before dependency upgrades. Repeated
-   post-upgrade full-suite runs exceeded the local 180-second validation
-   window; the 42-test production-critical subset passed. CI must complete the
-   entire suite without a timeout before release.
+2. The production Docker build could not be executed locally because the
+   Docker Desktop Linux engine was stopped. The mandatory GitHub container
+   build must pass before Render deployment.
 3. ML models, datasets, screenshots and candle artifacts remain local files.
    Render filesystems are ephemeral and not shared. Add S3-compatible object
    storage and atomic artifact loading before multi-instance production ML.
@@ -47,8 +49,9 @@ Validation date: 2026-07-26.
 ## High-priority risks
 
 - 633 test warnings show widespread naive UTC datetime usage.
-- User SPA output is approximately 799 KB minified; add route-level code
-  splitting and a bundle budget.
+- The History route chunk is approximately 398 KB minified; add a route chunk
+  budget and split its charting dependency if first-load profiling shows it is
+  user-visible.
 - Background workers lack platform HTTP health checks; external heartbeat
   alerts must be configured and tested.
 - Central log drain, Sentry project, uptime checks, database PITR and restart

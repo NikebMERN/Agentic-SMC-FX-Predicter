@@ -191,6 +191,7 @@ class FeedbackSample(Base):
 class ModelVersion(Base):
     __tablename__ = 'model_versions'
     id = Column(Integer, primary_key=True)
+    display_name = Column(String(64), nullable=True, index=True)
     symbol = Column(String(16), index=True, nullable=False)
     interval = Column(String(16), default='60min')
     trading_style = Column(String(16), default='intraday', nullable=False)

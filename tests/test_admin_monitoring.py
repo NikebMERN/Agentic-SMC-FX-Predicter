@@ -21,7 +21,12 @@ def test_system_health_exposes_resources_queues_and_services(client, admin_token
     assert body["resources"]["cpu_percent"] == 12.5
     assert body["redis"]["healthy"] is True
     assert "queue_size" in body
-    assert {row["service"] for row in body["services"]} == {"api", "ai-worker", "scheduler"}
+    assert {row["service"] for row in body["services"]} == {
+        "api",
+        "ai-worker",
+        "scheduler",
+        "telegram",
+    }
 
 
 def test_ml_monitoring_exposes_governance_and_history(client, admin_token):
@@ -97,5 +102,5 @@ def test_render_services_share_production_redis():
     text = __import__("pathlib").Path("render.yaml").read_text(encoding="utf-8")
     assert "type: keyvalue" in text
     assert "name: smartflow-cache" in text
-    assert text.count("key: REDIS_URL") == 3
+    assert text.count("key: REDIS_URL") == 4
     assert "property: connectionString" in text

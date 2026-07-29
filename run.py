@@ -149,8 +149,16 @@ def _migrate_schema(engine):
             "confidence_before_ml": "ALTER TABLE prediction_reviews ADD COLUMN confidence_before_ml FLOAT",
             "final_confidence": "ALTER TABLE prediction_reviews ADD COLUMN final_confidence FLOAT",
             "trading_style": "ALTER TABLE prediction_reviews ADD COLUMN trading_style VARCHAR(16) DEFAULT 'intraday'",
+            "risk_reward_planned": "ALTER TABLE prediction_reviews ADD COLUMN risk_reward_planned FLOAT",
+            "risk_reward_achieved": "ALTER TABLE prediction_reviews ADD COLUMN risk_reward_achieved FLOAT",
+            "account_type": "ALTER TABLE prediction_reviews ADD COLUMN account_type VARCHAR(32)",
+            "volatility": "ALTER TABLE prediction_reviews ADD COLUMN volatility FLOAT",
+            "spread": "ALTER TABLE prediction_reviews ADD COLUMN spread FLOAT",
+            "execution_delay_ms": "ALTER TABLE prediction_reviews ADD COLUMN execution_delay_ms INTEGER",
+            "manual_notes": "ALTER TABLE prediction_reviews ADD COLUMN manual_notes TEXT",
         },
         "model_versions": {
+            "display_name": "ALTER TABLE model_versions ADD COLUMN display_name VARCHAR(64)",
             "trading_style": "ALTER TABLE model_versions ADD COLUMN trading_style VARCHAR(16) NOT NULL DEFAULT 'intraday'",
             "model_type": "ALTER TABLE model_versions ADD COLUMN model_type VARCHAR(16) NOT NULL DEFAULT 'RANDOM_FOREST'",
             "calibrator_path": "ALTER TABLE model_versions ADD COLUMN calibrator_path VARCHAR(512)",
@@ -176,6 +184,19 @@ def _migrate_schema(engine):
         },
         "user_feedback": {
             "trade_entry": "ALTER TABLE user_feedback ADD COLUMN trade_entry VARCHAR(16)",
+            "screenshot_path": "ALTER TABLE user_feedback ADD COLUMN screenshot_path VARCHAR(512)",
+            "account_type": "ALTER TABLE user_feedback ADD COLUMN account_type VARCHAR(32)",
+            "execution_delay_ms": "ALTER TABLE user_feedback ADD COLUMN execution_delay_ms INTEGER",
+            "manual_notes": "ALTER TABLE user_feedback ADD COLUMN manual_notes TEXT",
+            "payload_hash": "ALTER TABLE user_feedback ADD COLUMN payload_hash VARCHAR(64)",
+        },
+        "training_records": {
+            "dataset_tier": "ALTER TABLE training_records ADD COLUMN dataset_tier VARCHAR(24) NOT NULL DEFAULT 'PENDING_REVIEW'",
+            "validation_score": "ALTER TABLE training_records ADD COLUMN validation_score FLOAT",
+            "validation_reasons_json": "ALTER TABLE training_records ADD COLUMN validation_reasons_json TEXT",
+            "duplicate_of_id": "ALTER TABLE training_records ADD COLUMN duplicate_of_id INTEGER",
+            "suspicious": "ALTER TABLE training_records ADD COLUMN suspicious BOOLEAN NOT NULL DEFAULT 0",
+            "institutional_example": "ALTER TABLE training_records ADD COLUMN institutional_example BOOLEAN NOT NULL DEFAULT 0",
         },
     }
     with engine.begin() as conn:
@@ -241,12 +262,8 @@ def _run_alembic():
 
 
 def _stamp_alembic_head_if_unversioned(engine) -> None:
-    """Mark create_all-based legacy schemas as the current Alembic baseline."""
+    """Mark the verified create_all/compatibility schema at the current revision."""
     try:
-        from sqlalchemy import inspect
-        inspector = inspect(engine)
-        if "alembic_version" in set(inspector.get_table_names()):
-            return
         from alembic.config import Config
         from alembic import command
         ini = os.path.join(os.path.dirname(__file__), "alembic.ini")
@@ -254,7 +271,7 @@ def _stamp_alembic_head_if_unversioned(engine) -> None:
             return
         cfg = Config(ini)
         command.stamp(cfg, "head")
-        log.info("Alembic version stamped at head for existing schema.")
+        log.info("Verified compatibility schema stamped at Alembic head.")
     except Exception as exc:
         log.warning("Alembic stamp skipped or failed: %s", exc)
 
@@ -439,9 +456,9 @@ def init_database() -> bool:
         import db.models  # noqa: F401  (registers the models)
         Base.metadata.create_all(bind=engine)
         _migrate_schema(engine)
+        _stamp_alembic_head_if_unversioned(engine)
         _run_alembic()
         _verify_schema(engine)
-        _stamp_alembic_head_if_unversioned(engine)
         _bootstrap_admin()
         _seed_default_settings()
         _seed_threshold_versions()
@@ -917,6 +934,21 @@ def cmd_scheduler() -> None:
         log.info("Scheduler shut down cleanly.")
 
 
+def cmd_telegram_worker() -> None:
+    """Run Telegram polling under the restart supervisor as a dedicated service."""
+    assert_production_ready("telegram")
+    init_database()
+    install_signal_handlers()
+    def heartbeat():
+        from services.runtime_monitor import record_heartbeat
+        while not _shutdown_event.is_set():
+            record_heartbeat("telegram")
+            _shutdown_event.wait(30)
+    threading.Thread(target=heartbeat, daemon=True, name="telegram-heartbeat").start()
+    log.info("Dedicated Telegram worker starting.")
+    _bot_supervisor()
+
+
 def cmd_all(build_frontend: bool = True, dev_frontend: bool = False):
     from utils.config import IS_DEVELOPMENT, TELEGRAM_BOT_TOKEN
 
@@ -1117,6 +1149,8 @@ def main():
     sub.add_parser("worker", help="background services only")
     sub.add_parser("ai-worker", help="continuous monitors, queue, and Telegram")
     sub.add_parser("scheduler", help="singleton scheduled jobs only")
+    sub.add_parser("telegram-worker", help="dedicated supervised Telegram polling")
+    sub.add_parser("migrate", help="create, migrate, verify, and seed the database")
     sub.add_parser("bot", help="Telegram bot only")
     sub.add_parser("refresh", help="refresh data + models for all pairs")
     sub.add_parser("build-admin", help="build React admin panel (admin-frontend)")
@@ -1157,6 +1191,11 @@ def main():
         cmd_ai_worker()
     elif args.command == "scheduler":
         cmd_scheduler()
+    elif args.command == "telegram-worker":
+        cmd_telegram_worker()
+    elif args.command == "migrate":
+        if not init_database():
+            raise SystemExit(1)
     elif args.command == "bot":
         from bot import run_bot
         run_bot()

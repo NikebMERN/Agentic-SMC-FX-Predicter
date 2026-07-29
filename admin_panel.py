@@ -722,6 +722,11 @@ def force_close_trade(admin_id, trade_id):
 # ---------------------------------------------------------------------
 # Models & data
 # ---------------------------------------------------------------------
+def _model_display_name(version_id):
+    position = max(int(version_id) - 1, 0)
+    return f"Model {position // 10 + 1}.{position % 10}"
+
+
 @admin_bp.route("/admin/api/models")
 @admin_required
 def list_models(admin_id):
@@ -731,10 +736,12 @@ def list_models(admin_id):
     try:
         versions = db.query(ModelVersion).order_by(ModelVersion.id.desc()).limit(50).all()
         for v in versions:
-            fname = os.path.basename(v.path)
-            db_files.add(fname)
+            fname = os.path.basename(v.path) if v.path else ""
+            if fname:
+                db_files.add(fname)
             models.append({
                 "id": v.id,
+                "name": v.display_name or _model_display_name(v.id),
                 "file": fname,
                 "symbol": v.symbol,
                 "interval": v.interval,
@@ -1603,6 +1610,7 @@ def list_model_versions(admin_id):
         for r in rows:
             versions.append({
                 "id": r.id,
+                "name": r.display_name or _model_display_name(r.id),
                 "symbol": r.symbol,
                 "interval": r.interval,
                 "val_accuracy": r.val_accuracy,
@@ -1620,6 +1628,25 @@ def list_model_versions(admin_id):
         })
     finally:
         db.close()
+
+
+@admin_bp.route("/admin/api/models/versions/<int:version_id>/name", methods=["PATCH"])
+@admin_required
+def rename_model_version(admin_id, version_id):
+    name = ((request.get_json(silent=True) or {}).get("name") or "").strip()
+    if not name or len(name) > 64:
+        return jsonify({"error": "Model name must be between 1 and 64 characters"}), 400
+    db = SessionLocal()
+    try:
+        row = db.query(ModelVersion).filter(ModelVersion.id == version_id).first()
+        if not row:
+            return jsonify({"error": "Model version not found"}), 404
+        row.display_name = name
+        db.commit()
+    finally:
+        db.close()
+    log_admin_action(admin_id, "rename_model", "model_version", version_id, {"name": name})
+    return jsonify({"message": "Model name updated", "id": version_id, "name": name})
 
 
 @admin_bp.route("/admin/api/models/versions/<int:version_id>/promote", methods=["POST"])

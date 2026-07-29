@@ -112,6 +112,7 @@ def save_candidate_version(
         db.add(row)
         db.commit()
         db.refresh(row)
+        row.display_name = _default_display_name(row.id)
 
         paths = save_bundle(
             row.id,
@@ -184,8 +185,13 @@ def list_model_versions(
 
 
 def _serialize_version(row: ModelVersion) -> dict:
+    try:
+        metrics = json.loads(row.metrics_json) if row.metrics_json else {}
+    except (json.JSONDecodeError, TypeError):
+        metrics = {}
     return {
         "id": row.id,
+        "name": row.display_name or _default_display_name(row.id),
         "symbol": row.symbol,
         "interval": row.interval,
         "trading_style": row.trading_style,
@@ -202,5 +208,10 @@ def _serialize_version(row: ModelVersion) -> dict:
         "val_accuracy": row.val_accuracy,
         "promoted_at": row.promoted_at.isoformat() if row.promoted_at else None,
         "created_at": row.created_at.isoformat() if row.created_at else None,
-        "metrics": json.loads(row.metrics_json) if row.metrics_json else {},
+        "metrics": metrics,
     }
+
+
+def _default_display_name(version_id: int) -> str:
+    position = max(int(version_id) - 1, 0)
+    return f"Model {position // 10 + 1}.{position % 10}"

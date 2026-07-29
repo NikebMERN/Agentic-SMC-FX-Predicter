@@ -6,7 +6,7 @@
 2. Copy `.env.example` to `.env`; use development-only credentials.
 3. Run `python -m pip install -r requirements-dev.txt`.
 4. Run `npm ci` in `smc-frontend` and `admin-frontend`.
-5. Run migrations with `alembic upgrade head`.
+5. Run migrations with `python run.py migrate`.
 6. Run tests with `python -m pytest -q`.
 7. Run user lint/build with `npm run lint` and `npm run build`.
 8. Run admin build with `npm run build`.

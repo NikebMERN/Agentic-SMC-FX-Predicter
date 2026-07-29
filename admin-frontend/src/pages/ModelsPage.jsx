@@ -72,6 +72,18 @@ export default function ModelsPage() {
     await runAction(() => api(`/models/versions/${versionId}/promote`, { method: "POST" }), `Version ${versionId} activated`);
   }
 
+  async function renameVersion(version) {
+    const name = window.prompt("Model display name", version.name || "");
+    if (!name?.trim()) return;
+    await runAction(
+      () => api(`/models/versions/${version.id}/name`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: name.trim() }),
+      }),
+      "Model name updated"
+    );
+  }
+
   async function changeMlMode(mode) {
     setMlMode(mode);
     await runAction(
@@ -173,12 +185,12 @@ export default function ModelsPage() {
           <div className="mb-4 max-h-80 overflow-auto rounded-lg border border-[#30363d]">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-[#161b22] text-left text-[#8b949e]">
-                <tr><th className="p-2">ID</th><th>Symbol</th><th>Trained</th><th>Val acc</th><th>Samples</th><th>Status</th><th></th></tr>
+                <tr><th className="p-2">Name</th><th>Market</th><th>Trained</th><th>Val acc</th><th>Samples</th><th>Status</th><th></th></tr>
               </thead>
               <tbody>
                 {versions.map((v) => (
                   <tr key={v.id} className="border-t border-[#30363d]">
-                    <td className="p-2">{v.id}</td>
+                    <td className="p-2"><button type="button" onClick={() => renameVersion(v)} className="text-[#58a6ff] hover:underline">{v.name || `Model ${v.id}`}</button></td>
                     <td>{v.symbol} <span className="text-xs text-[#8b949e]">{v.interval}</span></td>
                     <td className="text-xs text-[#8b949e]">{v.trained_at ? new Date(v.trained_at).toLocaleString() : "-"}</td>
                     <td>{v.val_accuracy != null ? `${(v.val_accuracy * 100).toFixed(1)}%` : "-"}</td>

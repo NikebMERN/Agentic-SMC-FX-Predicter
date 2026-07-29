@@ -416,6 +416,7 @@ async def _bootstrap_polling():
     """Delete webhook before Application.run_polling (belt-and-suspenders)."""
     request = build_httpx_request()
     bot = Bot(TELEGRAM_BOT_TOKEN, request=request)
+    await bot.initialize()
     try:
         await _clear_webhook_for_polling(bot)
     finally:

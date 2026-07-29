@@ -16,6 +16,7 @@ def test_render_separates_api_worker_scheduler_and_cache():
     assert services["smartflow-api"]["type"] == "web"
     assert services["smartflow-worker"]["type"] == "worker"
     assert services["smartflow-scheduler"]["type"] == "worker"
+    assert services["smartflow-telegram"]["type"] == "worker"
     assert services["smartflow-cache"]["type"] == "keyvalue"
 
 
@@ -28,7 +29,7 @@ def test_render_web_uses_readiness_and_production_wsgi():
 
 
 def test_render_workers_have_shutdown_window_and_redis():
-    for name in ("smartflow-worker", "smartflow-scheduler"):
+    for name in ("smartflow-worker", "smartflow-scheduler", "smartflow-telegram"):
         service = _services()[name]
         assert service["maxShutdownDelaySeconds"] >= 60
         env = {item["key"]: item for item in service["envVars"]}

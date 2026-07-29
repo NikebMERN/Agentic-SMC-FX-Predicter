@@ -20,8 +20,39 @@ jobs:
         env:
           SECRET_KEY: ci-secret-key-not-placeholder-32chars-min
           DATABASE_URL: sqlite:///./test_ci.db
-        run: alembic upgrade head
+        run: python run.py migrate
       - name: Run tests
         env:
           SECRET_KEY: ci-secret-key-not-placeholder-32chars-min
         run: pytest tests/ -v
+
+  frontend:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        application: [smc-frontend, admin-frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ${{ matrix.application }}/package-lock.json
+      - name: Install dependencies
+        working-directory: ${{ matrix.application }}
+        run: npm ci
+      - name: Build
+        working-directory: ${{ matrix.application }}
+        run: npm run build
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: smartflow-ai:ci

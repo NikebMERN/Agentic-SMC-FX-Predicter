@@ -7,7 +7,8 @@
 | Service | Responsibility | Scaling rule |
 |---|---|---|
 | `smartflow-api` | Gunicorn/Flask API and immutable React assets | Two or more instances |
-| `smartflow-worker` | Market monitoring, confirmation transitions, notification outbox, Telegram polling | One instance until jobs use distributed leases |
+| `smartflow-worker` | Market monitoring, confirmation transitions and notification outbox | One instance until jobs use distributed leases |
+| `smartflow-telegram` | Dedicated supervised Telegram long polling | Exactly one instance per bot token |
 | `smartflow-scheduler` | Singleton APScheduler for alert scans and model retraining | Exactly one instance |
 | `smartflow-cache` | Rate limiting, cross-service heartbeats, transient coordination | Managed Key Value |
 
@@ -87,7 +88,7 @@ scheduler where appropriate, and dispose database pools.
 
 Use these rollout steps:
 
-1. Apply database migrations before application traffic moves.
+1. Apply database migrations with `python run.py migrate` before application traffic moves.
 2. Deploy the scheduler and worker with backward-compatible schema changes.
 3. Deploy the API and verify `/healthz` and `/readyz`.
 4. Verify Redis heartbeats for all three runtime roles.
